@@ -51,6 +51,7 @@ Already wired in the repo:
 ### 1.2 To add during development
 - shadcn primitives as needed (pulled via the shadcn MCP per project rule): `input`, `label`, `form`, `dialog`, `select`, `table`, `card`, `badge`, `sidebar`, `sonner`/`toast`, `command` (search), `popover`, `tabs`, `alert-dialog`, `calendar`/date picker.
   - **Installed for the auth system:** `input`, `label`, `form`, `card`, `sonner`, `alert-dialog`, `dialog`, `dropdown-menu`, `table`, `badge`, `switch`, `separator`, `select`, `textarea`. (`form.tsx` was hand-written to the standard shadcn pattern because the `radix-luma` style registry did not emit it via the CLI.)
+  - **Installed for the app shell / sidebar:** `sidebar`, `sheet`, `tooltip`, `skeleton` (plus the `use-mobile` hook at `@/hooks/use-mobile`). The `(app)` shell wraps pages in `SidebarProvider` + `TooltipProvider`; navigation, the worker menu, the "Šalter" badge, and shift controls live in `components/app-sidebar.tsx`, with a slim top header (`components/app-header.tsx`) carrying the sidebar toggle and page title.
 - `@tanstack/react-query` (server-state caching + optimistic updates for fast check-in).
 - A PWA layer: service worker + offline store (see §6). Options: `next-pwa`/`@serwist/next` for the service worker, and **IndexedDB** (via `idb` or `Dexie`) for the offline queue.
 - **Zod for input validation** in server actions/forms — **installed**, together with `react-hook-form` + `@hookform/resolvers` for the auth forms.
@@ -105,7 +106,7 @@ app/
     zaboravljena-lozinka/       # forgot password (request reset by username)
     reset/                      # set new password (consumes recovery link)
   (app)/
-    layout.tsx                  # authenticated shell + top bar (implemented)
+    layout.tsx                  # authenticated shell + sidebar (implemented)
     dashboard/                  # daily check-in
     clanovi/                    # members list + virtual card
     cene/                       # membership prices
@@ -116,9 +117,10 @@ app/
     admin/accounts/             # service-role account management (implemented)
 components/
   ui/                           # shadcn primitives
-  app-top-bar.tsx, switch-worker-dialog.tsx, counter-device-toggle.tsx  # (implemented)
+  app-sidebar.tsx, app-header.tsx, switch-worker-dialog.tsx, counter-device-toggle.tsx, placeholder-page.tsx  # (implemented)
 lib/
   utils.ts                      # cn() + helpers
+  nav.ts                        # sidebar nav items + active-state + page titles (implemented)
   auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
   shifts/                       # shift lifecycle server actions (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
@@ -277,7 +279,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (auth done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded). Remaining: full app shell + sidebar (shadcn).
+- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer, "U pripremi" placeholder pages for `clanovi`/`cene`/`pazar`).
 - **Phase 1 — Core (MVP)**: members CRUD + card + search; membership types/prices; dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
 - **Phase 2 — Advanced**: trainer sessions + session deduction + card history; reserved/owed sessions + settlement; pause/resume; Fitpass + surcharge; key search; shifts + Admin views; monthly/yearly takings; soon-to-expire list; Admin export.
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

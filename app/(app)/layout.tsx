@@ -1,7 +1,10 @@
 import { requireUser } from "@/lib/auth/session";
 import { isCounterDevice } from "@/lib/auth/counter";
 import { ensureOpenShift } from "@/lib/shifts/actions";
-import { AppTopBar } from "@/components/app-top-bar";
+import { AppSidebar } from "@/components/app-sidebar";
+import { AppHeader } from "@/components/app-header";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 /**
  * Authenticated application shell.
@@ -23,9 +26,14 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppTopBar staff={staff} isCounter={counter} />
-      <main className="flex-1 container mx-auto px-4 py-6">{children}</main>
-    </div>
+    <TooltipProvider>
+      <SidebarProvider>
+        <AppSidebar staff={staff} isCounter={counter} />
+        <SidebarInset>
+          <AppHeader />
+          <main className="flex-1 p-4 md:p-6">{children}</main>
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
   );
 }
