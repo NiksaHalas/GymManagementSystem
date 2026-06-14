@@ -50,9 +50,10 @@ Already wired in the repo:
 
 ### 1.2 To add during development
 - shadcn primitives as needed (pulled via the shadcn MCP per project rule): `input`, `label`, `form`, `dialog`, `select`, `table`, `card`, `badge`, `sidebar`, `sonner`/`toast`, `command` (search), `popover`, `tabs`, `alert-dialog`, `calendar`/date picker.
+  - **Installed for the auth system:** `input`, `label`, `form`, `card`, `sonner`, `alert-dialog`, `dialog`, `dropdown-menu`, `table`, `badge`, `switch`, `separator`, `select`, `textarea`. (`form.tsx` was hand-written to the standard shadcn pattern because the `radix-luma` style registry did not emit it via the CLI.)
 - `@tanstack/react-query` (server-state caching + optimistic updates for fast check-in).
 - A PWA layer: service worker + offline store (see §6). Options: `next-pwa`/`@serwist/next` for the service worker, and **IndexedDB** (via `idb` or `Dexie`) for the offline queue.
-- Zod for input validation in server actions/forms.
+- **Zod for input validation** in server actions/forms — **installed**, together with `react-hook-form` + `@hookform/resolvers` for the auth forms.
 - The companion backup script (Node) — see §8.
 
 > **UI rule:** always use shadcn/ui primitives from `@/components/ui/*`, pulled/verified via the shadcn MCP, before writing custom UI. Keep styling in Tailwind and reuse shadcn variants.
@@ -99,31 +100,37 @@ flowchart LR
 ### 2.1 Proposed folder structure
 ```
 app/
-  (auth)/login/                 # login page
+  (auth)/                       # unauthenticated shell (implemented)
+    login/                      # login page + form + signIn action
+    zaboravljena-lozinka/       # forgot password (request reset by username)
+    reset/                      # set new password (consumes recovery link)
   (app)/
-    layout.tsx                  # authenticated shell + sidebar
+    layout.tsx                  # authenticated shell + top bar (implemented)
     dashboard/                  # daily check-in
     clanovi/                    # members list + virtual card
     cene/                       # membership prices
     pazar/                      # daily/monthly/yearly takings
     smene/                      # shifts (admin)
-    nalozi/                     # accounts (admin)
-  api/                          # route handlers (sync endpoint, export, cron)
+    nalozi/                     # accounts (admin) + counter-device toggle (implemented)
+  api/
+    admin/accounts/             # service-role account management (implemented)
 components/
   ui/                           # shadcn primitives
-  <feature components>
+  app-top-bar.tsx, switch-worker-dialog.tsx, counter-device-toggle.tsx  # (implemented)
 lib/
   utils.ts                      # cn() + helpers
-  auth/                         # role guards, username<->email mapping
-  db/                           # typed queries, server actions
+  auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
+  shifts/                       # shift lifecycle server actions (implemented)
+  db/                           # typed queries + generated types (lib/db/types.ts)
   offline/                      # IndexedDB queue + sync engine
   time/                         # Europe/Belgrade business-day helpers
 utils/
-  supabase/{server,client,middleware}.ts
+  supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
 supabase/
   migrations/                   # SQL migrations (see DB.md)
 scripts/
+  seed-admins.mjs               # one-time admin seed (implemented)
   backup-usb.mjs                # companion backup script
 ```
 
@@ -132,20 +139,28 @@ scripts/
 ## 3. Authentication & authorization
 
 ### 3.1 Username + password (no public email)
-- Supabase Auth requires an email identity, so each worker maps to a **synthetic internal email**: `"<username>@gym.local"` (domain is internal, never sent mail).
-- Login flow: the UI takes `username` + `password`, the server maps `username → synthetic email`, then calls `supabase.auth.signInWithPassword`.
+- Supabase Auth requires an email identity, so each worker maps to a **synthetic internal email**: `"<username>@gym.local"` (domain is internal, never sent mail). Helpers in `lib/auth/username.ts` normalize (trim + lowercase), validate (letters/digits/`._-`, min 3), and map `username → email`.
+- Login flow (`app/(auth)/login/actions.ts`): the UI takes `username` + `password`, the server maps `username → synthetic email`, calls `supabase.auth.signInWithPassword`, then checks `staff.active` (disabled accounts are signed back out and rejected).
+- **Rate limiting:** failed attempts are recorded in the `login_attempt` table keyed by `username + IP`; **≥ 5 fails in 15 min** blocks further attempts until the window passes. Successful login clears the key. (Uses the service-role client; see `DB.md` §3.12.)
 - A `staff` profile row (see `DB.md`) is linked 1:1 to `auth.users.id` and stores `username`, `role`, `recovery_email`, and `active`.
 
 ### 3.2 Password reset (Resend)
-- Each `staff` record has a **recovery email** (set by an Admin at creation).
-- Reset flow: Admin can issue a reset, or the worker requests one; the app generates a reset token and emails it to the recovery email via the existing `sendEmail()` helper (`utils/resend/send.ts`). The link lands on a "set new password" page that calls Supabase Auth to update the password.
-- Requires `RESEND_API_KEY` and `RESEND_FROM_EMAIL` to be configured (see §10).
+- Each `staff` record has a **recovery email** (set by an Admin).
+- Reset flow (`lib/auth/password-reset.ts`): self-service from the `/zaboravljena-lozinka` page (enter username) or Admin-initiated from the Accounts page. The **service-role admin client** calls `auth.admin.generateLink({ type: 'recovery' })` with `redirectTo = <site>/reset`, and the link is emailed to the `recovery_email` via the existing `sendEmail()` helper (`utils/resend/send.ts`). Links are valid **1 hour** (Supabase default OTP expiry).
+- The `/reset` page consumes the recovery session and calls `supabase.auth.updateUser({ password })` (min 8 chars).
+- Self-service responses never reveal whether a username exists (no user enumeration).
+- Requires `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `NEXT_PUBLIC_SITE_URL` to be configured (see §10).
 
 ### 3.3 Roles
 - Two roles: `user` and `admin`, stored on the `staff` row.
 - **Database-level**: Postgres **RLS** policies enforce access (e.g. only Admins can read monthly/yearly aggregates, manage accounts, or edit past-day logs). RLS reads the caller's role via a helper that joins `auth.uid()` to `staff.role`.
-- **App-level**: middleware + layout guards hide/disable Admin-only routes and actions for Users; this is a UX layer on top of (never instead of) RLS.
-- **Admin remote view-only**: an Admin logging in away from the counter sees read-only overviews. This session does **not** open a shift (see §5).
+- **App-level**: the root `middleware.ts` redirects unauthenticated requests to `/login` (and authenticated users away from the auth pages); `requireUser()` / `requireAdmin()` (`lib/auth/session.ts`) guard the `(app)` shell and Admin-only segments (`/nalozi`, `/smene`). This is a UX layer on top of (never instead of) RLS.
+- **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes `username`/`role`/`recovery_email` as metadata so the `handle_new_user` trigger links the `staff` row.
+
+### 3.4 Counter device vs. remote (view-only) — device binding
+- Whether a login is a **counter session** (opens a shift) or a **remote view-only** session (no shift) is decided by **device binding**, not by which URL was used (URLs are convention-only and can be misused).
+- The counter PC is marked once via an Admin-only action that writes a **signed, httpOnly `gym_counter` cookie** (HMAC-SHA256 over `COUNTER_DEVICE_SECRET`, 1-year TTL). `lib/auth/counter.ts` exposes `isCounterDevice()`, `setCounterDevice()`, `unsetCounterDevice()`; the toggle lives on the Accounts page.
+- On a counter device, the `(app)` layout auto-ensures an open shift on each load. On any other device the cookie is absent, so **no shift is created** — this is how an Admin logging in from home gets the read-only overview.
 
 ---
 
@@ -161,11 +176,13 @@ scripts/
 
 ## 5. Shifts from auth sessions
 
-- A shift is a `shifts` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`).
-- **Open a shift** when a worker logs in at the counter (a counter session). **Close it** on logout.
-- **Handover ("switch worker")**: a server action closes the current shift (`ended_reason = 'switch'`) and opens a new one for the incoming worker after re-authenticating them — without tearing down the PWA/app state.
-- **Safety net**: a scheduled job (Supabase `pg_cron` or a Vercel Cron route handler) auto-closes shifts still open past the configured closing time (`ended_reason = 'auto_close'`); optionally close after N hours of inactivity (`'inactivity'`). This prevents 14-hour phantom shifts from a forgotten logout.
-- **Admin remote view-only** logins are flagged as non-counter sessions and **do not create** a shift.
+- A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/actions.ts`.
+- **Open a shift** automatically when a worker logs in on the counter device (the `(app)` layout calls `ensureOpenShift()`): if no shift is open it opens one; if a *different* worker's shift is open it treats login as a handover (closes old as `switch`, opens new); if the *same* worker already has one open it is reused (idempotent).
+- **End shift (manual)**: a worker explicitly ends their shift (`ended_reason = 'logout'`) and **stays signed in**.
+- **Sign-out ≠ end shift**: plain logout only clears the auth session and **leaves the shift open** (per product decision); the shift then ends via manual end, handover, or the auto-close safety net.
+- **Handover ("switch worker")**: a server action re-authenticates the incoming worker by **username + password**, closes the current shift (`ended_reason = 'switch'`) and opens a new one — without tearing down app state. Fits the daily 09:00–15:00 / 15:00–21:00 rotation.
+- **Safety net**: the Supabase **`pg_cron`** job `auto_close_shifts()` closes shifts still open past the gym's closing time + 20 min (`ended_reason = 'auto_close'`), stamping `ended_at` to the actual closing time **without** touching auth sessions. Closing times (Europe/Belgrade): **Mon–Fri 21:00, Sat 18:00, Sun 16:00**. See `DB.md` §8.
+- **Admin remote view-only** logins are non-counter sessions (no `gym_counter` cookie) and **do not create** a shift (see §3.4).
 
 ---
 
@@ -240,11 +257,13 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | client/server/middleware | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | client/server/middleware | Public (anon/publishable) key |
-| `SUPABASE_SERVICE_ROLE_KEY` | backup script, admin server tasks | Privileged operations (server/local only) |
+| `SUPABASE_SERVICE_ROLE_KEY` | `utils/supabase/admin.ts`, accounts API, login rate-limit, seed/backup scripts | Privileged operations (server/local only) |
 | `RESEND_API_KEY` | `utils/resend/client.ts` | Send password-reset emails |
 | `RESEND_FROM_EMAIL` | `utils/resend/client.ts` | From address (defaults to `onboarding@resend.dev`) |
+| `COUNTER_DEVICE_SECRET` | `lib/auth/counter.ts` | HMAC secret signing the `gym_counter` device cookie (server-only) |
+| `NEXT_PUBLIC_SITE_URL` | `lib/auth/password-reset.ts` | Base URL for the password-reset `redirectTo` link |
 
-> The existing helpers read `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Keep those names. Never expose the service-role key to the browser.
+> The existing helpers read `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Keep those names. Never expose the service-role key or `COUNTER_DEVICE_SECRET` to the browser. A template is provided in `.env.example`; the 2 initial Admins are provisioned with `scripts/seed-admins.mjs`.
 
 ---
 
@@ -258,7 +277,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup**: schema + RLS, auth (username/password, seed 2 Admins), app shell + sidebar (shadcn).
+- **Phase 0 — Setup** (auth done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded). Remaining: full app shell + sidebar (shadcn).
 - **Phase 1 — Core (MVP)**: members CRUD + card + search; membership types/prices; dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
 - **Phase 2 — Advanced**: trainer sessions + session deduction + card history; reserved/owed sessions + settlement; pause/resume; Fitpass + surcharge; key search; shifts + Admin views; monthly/yearly takings; soon-to-expire list; Admin export.
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

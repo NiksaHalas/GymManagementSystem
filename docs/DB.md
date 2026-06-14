@@ -1,9 +1,12 @@
 # DB — Database Schema
 
-Version: 1.0
-Date: 2026-06-11
+Version: 1.2
+Date: 2026-06-14
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
+
+> v1.1 aligns this doc with the applied migrations in `supabase/migrations/` (UUID defaults, helper functions, the `handle_new_user` trigger, and the implemented RLS policies). Refinement deltas vs. v1.0 are called out inline.
+> v1.2 adds the authentication-system artifacts: the `login_attempt` rate-limit table (§3.12) and the `pg_cron` shift auto-close job (§8). Migrations: `20260614142000_add_login_attempt_table`, `20260614142100_pgcron_shift_autoclose`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -15,11 +18,11 @@ This document defines the database schema for the Gym Management System. It foll
 - **Timestamps**: `timestamptz` everywhere (UTC). The **business day** is derived in `Europe/Belgrade` and stored as a `date` (`business_date`) on `checkin`/`payment` so day-grouping survives the midnight reset and offline sync.
 - **Primary keys**:
   - **Reference/config tables** (`staff`, `membership_type`, `price`, `gym_key`): `bigint generated always as identity` (sequential, compact).
-  - **Operational tables that can be created offline** (`member`, `membership`, `checkin`, `payment`, `session_log`, `reserved_session`, `shift`): **UUID** primary keys, generated **client-side as UUIDv7** (time-ordered → no index fragmentation, stable id before sync, idempotent upsert). Requires the `pg_uuidv7` extension; otherwise the client generates UUIDv7 and sends it.
+  - **Operational tables that can be created offline** (`member`, `membership`, `checkin`, `payment`, `session_log`, `reserved_session`, `shift`): **UUID** primary keys. **Refinement (v1.1):** the server-side column default is **`gen_random_uuid()`** (UUIDv4), because the `pg_uuidv7` extension is **not available on Supabase**. Clients that create rows offline still generate a **client-side UUIDv7** (time-ordered, stable id before sync) and send it as the `id`, so sync stays an idempotent upsert by `id`; only the DB fallback default differs (UUIDv4 instead of v7).
 - **Money**: integer RSD (`amount_rsd int`), no decimals.
 - **Soft delete**: `member.archived` (history preserved). Member numbers are never reused.
 - **Audit**: mutable rows carry `created_by` / `updated_by` (→ `staff.id`) and `created_at` / `updated_at`.
-- **RLS**: `enable row level security` + `force row level security` on all tables. A `current_staff()` helper resolves the caller's `staff` row from `auth.uid()`; `is_admin()` checks the role.
+- **RLS**: `enable row level security` + `force row level security` on all tables. Helper functions (`security definer`, `set search_path = public`): `current_staff()` resolves the caller's `staff` row from `auth.uid()`, `is_admin()` checks the role, and `business_today()` (`search_path = ''`) returns the Europe/Belgrade business day used by same-day write rules. A `handle_new_user()` trigger on `auth.users` auto-creates the linked `staff` row. See §5 for the implemented policies.
 
 ### 1.1 Enumerated types
 ```sql
@@ -80,12 +83,34 @@ create index staff_active_idx on staff (active) where active;
 - `username` is unique; login maps `username → <username>@gym.local` synthetic email for Supabase Auth.
 - Minimum-2-Admins is an operational guideline (not DB-enforced), per product decision.
 
+**Auto-provisioning of `staff` (refinement v1.1):** a trigger on `auth.users` creates the linked `staff` row on user creation, deriving `username` / `role` / `recovery_email` from the auth metadata (falling back to the email local-part for `username`). This lets accounts created later (Dashboard, app, or a seed script) link automatically.
+```sql
+create or replace function handle_new_user()
+returns trigger language plpgsql
+  security definer set search_path = public as $$
+begin
+  insert into public.staff (id, username, role, recovery_email)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
+    coalesce((new.raw_user_meta_data->>'role')::staff_role, 'user'),
+    new.raw_user_meta_data->>'recovery_email'
+  )
+  on conflict (id) do nothing;
+  return new;
+end $$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_user();
+```
+
 ### 3.2 `shift`
 Derived from login sessions; one row per worked shift.
 
 ```sql
 create table shift (
-  id          uuid primary key default uuid_generate_v7(),
+  id          uuid primary key default gen_random_uuid(),
   staff_id    uuid not null references staff (id) on delete restrict,
   started_at  timestamptz not null default now(),
   ended_at    timestamptz,
@@ -98,16 +123,17 @@ create index shift_started_at_idx on shift (started_at);
 create index shift_open_idx       on shift (staff_id) where ended_at is null;
 ```
 - Handover closes the open shift (`ended_reason = 'switch'`) and opens a new one.
-- A scheduled job auto-closes stale open shifts (`auto_close` / `inactivity`).
-- Admin **remote view-only** logins do not create a shift.
+- A `pg_cron` job auto-closes stale open shifts (`auto_close`) at the gym's closing time + 20 min — see §8.
+- Admin **remote view-only** logins do not create a shift (the device is not the registered counter — see `Tech.md` §3/§5).
+- **Shift lifecycle (implemented):** opens automatically on counter login; a worker may **end** it manually (`ended_reason = 'logout'`); plain **sign-out does NOT close** the shift (it stays open until ended, handed over, or auto-closed).
 
 ### 3.3 `member`
 The virtual card. Soft-deletable; permanent member number.
 
 ```sql
 create table member (
-  id            uuid primary key default uuid_generate_v7(),
-  member_no     bigint unique,         -- null until assigned on sync; never reused
+  id            uuid primary key default gen_random_uuid(),
+  member_no     bigint,                -- null until assigned on sync; never reused (uniqueness via partial unique index below)
   first_name    text not null,
   last_name     text not null,
   phone         text not null,         -- required; NOT unique (family sharing allowed, soft warning in app)
@@ -137,7 +163,8 @@ create sequence member_no_seq;
 
 -- Assign the next permanent number when a member is finalized (on server-side sync/insert)
 create or replace function assign_member_no()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+  security definer set search_path = public as $$   -- refinement (v1.1): runs as owner so it can use the sequence regardless of caller role
 begin
   if new.member_no is null then
     new.member_no := nextval('member_no_seq');
@@ -197,7 +224,7 @@ A member's membership period. One active/paused at a time.
 
 ```sql
 create table membership (
-  id                 uuid primary key default uuid_generate_v7(),
+  id                 uuid primary key default gen_random_uuid(),
   member_id          uuid not null references member (id) on delete restrict,
   membership_type_id bigint not null references membership_type (id) on delete restrict,
   start_mode         membership_start_mode not null default 'payment',
@@ -234,7 +261,7 @@ Cash payments. `member_id` is null for anonymous Fitpass.
 
 ```sql
 create table payment (
-  id                 uuid primary key default uuid_generate_v7(),
+  id                 uuid primary key default gen_random_uuid(),
   member_id          uuid references member (id) on delete restrict,      -- null = Fitpass
   staff_id           uuid not null references staff (id) on delete restrict,
   membership_type_id bigint references membership_type (id) on delete restrict,
@@ -274,7 +301,7 @@ Daily arrivals. `member_id` null = Fitpass. Determines key occupancy.
 
 ```sql
 create table checkin (
-  id                  uuid primary key default uuid_generate_v7(),
+  id                  uuid primary key default gen_random_uuid(),
   member_id           uuid references member (id) on delete restrict,     -- null = Fitpass
   staff_id            uuid not null references staff (id) on delete restrict,
   membership_id       uuid references membership (id) on delete set null,
@@ -317,7 +344,7 @@ History of consumed trainer sessions (dates on the card).
 
 ```sql
 create table session_log (
-  id            uuid primary key default uuid_generate_v7(),
+  id            uuid primary key default gen_random_uuid(),
   member_id     uuid not null references member (id) on delete restrict,
   membership_id uuid references membership (id) on delete set null,
   checkin_id    uuid references checkin (id) on delete set null,
@@ -338,7 +365,7 @@ Owed (reserved) trainer sessions when the member had 0 sessions.
 
 ```sql
 create table reserved_session (
-  id                  uuid primary key default uuid_generate_v7(),
+  id                  uuid primary key default gen_random_uuid(),
   member_id           uuid not null references member (id) on delete restrict,
   checkin_id          uuid references checkin (id) on delete set null,
   training_type       training_type not null,
@@ -375,6 +402,28 @@ insert into gym_key (key_no)
 select generate_series(1, 22);
 ```
 - Current/last holder is **derived from `checkin`** (latest assignment), not stored here.
+
+### 3.12 `login_attempt`
+Rate-limiting ledger for failed logins. Written/read **only by the service-role client** (the login server action), never by the browser.
+
+```sql
+create table login_attempt (
+  id            bigint generated always as identity primary key,
+  attempt_key   text not null,     -- "login:<username>:<ip>"
+  attempted_at  timestamptz not null default now()
+);
+
+create index login_attempt_key_at_idx on login_attempt (attempt_key, attempted_at);
+
+-- Only the service role touches this table
+revoke all on login_attempt from anon, authenticated;
+grant all on login_attempt to service_role;
+
+alter table login_attempt enable row level security;
+alter table login_attempt force row level security;
+```
+- The login action records one row per failed attempt keyed by `username + IP`. Login is blocked when **≥ 5 failed attempts** fall within a **15-minute** window; successful login clears the rows for that key.
+- RLS is `enable`d + `force`d with **no policies** by design — `anon`/`authenticated` are revoked, and `service_role` bypasses RLS. (Supabase's linter flags this as INFO `rls_enabled_no_policy`, which is expected here.)
 
 ---
 
@@ -428,19 +477,27 @@ select generate_series(1, 22);
 
 ---
 
-## 5. Row-Level Security (outline)
+## 5. Row-Level Security (implemented)
 
-Enable + force RLS on every table, then add role-aware policies. Helper functions:
+RLS is `enable`d + `force`d on every table. Helper functions are `security definer` so they can read `staff` inside policies without recursion (the `postgres` owner has `BYPASSRLS`), with a pinned `search_path`:
 
 ```sql
 create or replace function current_staff()
-returns staff language sql stable security definer as $$
+returns staff language sql stable
+  security definer set search_path = public as $$
   select * from staff where id = auth.uid();
 $$;
 
 create or replace function is_admin()
-returns boolean language sql stable security definer as $$
+returns boolean language sql stable
+  security definer set search_path = public as $$
   select exists (select 1 from staff where id = auth.uid() and role = 'admin' and active);
+$$;
+
+-- business day in Europe/Belgrade, used by the same-day write rules
+create or replace function business_today()
+returns date language sql stable set search_path = '' as $$
+  select (now() at time zone 'Europe/Belgrade')::date;
 $$;
 ```
 
@@ -458,13 +515,34 @@ Policy intent (per `PRD.md` §2):
 | `staff` (accounts) | read self | full (create/disable/reset) |
 | `membership_type` | read | full |
 
-- The "today only for Users" rule is enforced with a `with check` / `using` clause comparing `business_date` to `(now() at time zone 'Europe/Belgrade')::date`.
-- All writes set `created_by`/`updated_by` to `auth.uid()` (enforced via trigger or `with check`).
+### 5.1 Implemented policies
+All policies target the `authenticated` role (`anon` has no table grants):
+
+| Table | SELECT `using` | INSERT `with check` | UPDATE `using` / `with check` | DELETE `using` |
+|---|---|---|---|---|
+| `staff` | `id = auth.uid() or is_admin()` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `shift` | `is_admin()` | `staff_id = auth.uid() or is_admin()` | `staff_id = auth.uid() or is_admin()` (both) | — |
+| `member` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
+| `membership` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
+| `membership_type` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `price` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `gym_key` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `payment` | `true` | `staff_id = auth.uid()` | `is_admin() or business_date = business_today()` (both) | `is_admin()` |
+| `checkin` | `true` | `staff_id = auth.uid()` | `is_admin() or business_date = business_today()` (both) | `is_admin()` |
+| `session_log` | `true` | `true` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `reserved_session` | `true` | `created_by = auth.uid()` | `true` / `true` | `is_admin()` |
+
+### 5.2 Notes
+- **Actor binding (audit):** INSERT/UPDATE on operational tables enforce that the acting column equals `auth.uid()` — `created_by` (`member`, `membership`, `reserved_session`), `staff_id` (`payment`, `checkin`), `updated_by` (`member`/`membership` update). **Server actions using the `authenticated` (cookie) client MUST set these columns to the signed-in user, or the write is rejected by RLS.** Server-side code using the `service_role` key bypasses RLS.
+- **Same-day rule for Users** on `payment`/`checkin` UPDATE: `business_date = business_today()` (Europe/Belgrade); Admins may edit any day.
+- **Two intentional exceptions** (flagged WARN by Supabase's linter, accepted): `session_log_insert` and `reserved_session_update` use `with check (true)` because the schema has no actor column to bind to — `session_log` has no `created_by`, and a `reserved_session` is settled by whichever worker takes the next payment (not the creator). These rely on app-level checks. To close them at the DB level we would add `recorded_by` to `session_log` and `settled_by` to `reserved_session`.
+- **Privileges:** `authenticated` and `service_role` are granted `select, insert, update, delete` on all tables (RLS is the real filter); `anon` is granted none. Helper functions have `execute` revoked from `anon`; trigger functions (`assign_member_no`, `handle_new_user`) additionally have it revoked from `authenticated` (triggers fire regardless of `execute` grants).
+- **Auto-enable safety net:** a pre-existing project-level event trigger (`ensure_rls` → `rls_auto_enable()`) auto-enables RLS on any new `public` table; migrations additionally `force` it.
 
 ---
 
 ## 6. Notes on offline & sync (DB-side)
-- UUIDv7 PKs let the client create `member`/`checkin`/`payment` rows offline with final IDs; sync is an **idempotent upsert by `id`**.
+- UUID PKs let the client create `member`/`checkin`/`payment` rows offline with final IDs; sync is an **idempotent upsert by `id`**. Offline clients send their own **client-side UUIDv7**; the DB column default is `gen_random_uuid()` (UUIDv4) only as a server-side fallback (see §1).
 - `business_date` is set at creation time (device clock, Europe/Belgrade) so offline rows land on the correct day.
 - `member_no` is intentionally **nullable** and assigned server-side via `member_no_seq` so offline members never collide and numbers are never reused.
 - Mostly-additive writes (new check-ins/payments) keep conflicts rare; edits use last-write-wins by `updated_at`, with same-day-only restrictions for Users enforced by RLS.
@@ -478,4 +556,60 @@ Policy intent (per `PRD.md` §2):
 - Soon-to-expire: `membership_end_date_idx`.
 - One-active-membership guarantee: `membership_one_active_uidx` (partial unique).
 - Unsettled debt lookups / archive block: `reserved_session_unsettled_idx`.
+- Login rate limiting: `login_attempt_key_at_idx`.
 - Every foreign key column is indexed (see each table).
+
+---
+
+## 8. Scheduled jobs (`pg_cron`)
+
+The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). One job is registered.
+
+### 8.1 Shift auto-close safety net
+`auto_close_shifts()` closes any still-open shift after the gym's **closing time + 20-minute grace**, stamping `ended_at` to the **actual closing time** (not "now") and `ended_reason = 'auto_close'`. It does **not** touch auth sessions, so a logged-in worker stays signed in.
+
+Closing times (Europe/Belgrade):
+
+| Day | Closing | Auto-close fires from |
+|---|---|---|
+| Mon–Fri | 21:00 | 21:20 |
+| Saturday | 18:00 | 18:20 |
+| Sunday | 16:00 | 16:20 |
+
+```sql
+create or replace function public.auto_close_shifts()
+returns void language plpgsql
+  security definer set search_path = public as $$
+declare
+  belgrade_now  timestamptz := now() at time zone 'Europe/Belgrade';
+  belgrade_date date        := belgrade_now::date;
+  dow           int         := extract(isodow from belgrade_now); -- 1=Mon..7=Sun
+  close_time    time;
+  close_instant timestamptz;
+begin
+  if    dow between 1 and 5 then close_time := '21:00';
+  elsif dow = 6            then close_time := '18:00';
+  else                          close_time := '16:00';
+  end if;
+
+  close_instant := (belgrade_date + close_time) at time zone 'Europe/Belgrade';
+  if now() < close_instant + interval '20 minutes' then
+    return;  -- grace period not elapsed
+  end if;
+
+  update public.shift
+     set ended_at = greatest(close_instant, started_at),
+         ended_reason = 'auto_close'
+   where ended_at is null;
+end $$;
+
+revoke execute on function public.auto_close_shifts() from public, anon, authenticated;
+grant  execute on function public.auto_close_shifts() to service_role;
+
+-- Runs every 10 min, 14:00–20:00 UTC (covers all three Belgrade triggers across CET/CEST);
+-- the function gates internally on local time, so frequent runs are safe.
+select cron.schedule('auto-close-shifts', '*/10 14-20 * * *',
+  $$ select public.auto_close_shifts(); $$);
+```
+- **DST-proof:** the schedule window is in UTC but the closing logic is computed in `Europe/Belgrade` inside the function, so it stays correct across CET/CEST.
+- `EXECUTE` is revoked from `public`/`anon`/`authenticated` so the `SECURITY DEFINER` function is not a public RPC endpoint.

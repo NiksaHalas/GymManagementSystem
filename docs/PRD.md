@@ -56,11 +56,13 @@ Notes:
 ## 3. Functional requirements
 
 ### 3.1 Login & accounts
-- Login page (username + password). After login → main Dashboard.
+- Login page (username + password). After login → main Dashboard. Usernames are case-insensitive.
 - Sidebar navigation: Dashboard, Members ("Članovi"), Membership Prices ("Cene članarina"), Daily Payments / Takings ("Dnevne uplate / Pazar"), and Admin-only: Shifts ("Smene"), Accounts ("Nalozi").
 - Password policy: **minimum 8 characters**, no other rules.
-- **Password reset**: self-service via **email**. Each worker account has a **recovery email** (set by an Admin when the account is created). A reset link/code is emailed to that address.
-- Account management (Admin only): create worker, disable worker, reset password, set/update recovery email, set role.
+- **Disabled accounts cannot log in**; after several failed attempts in a row login is **temporarily locked** to deter guessing.
+- **Password reset**: self-service via **email**. Each worker account has a **recovery email** (set by an Admin). The worker requests a reset by username (or an Admin triggers it); a reset link valid for **1 hour** is emailed to that address.
+- Account management (Admin only): create worker (**Admin sets the password directly**; the worker does not have to change it on first login), disable/enable worker, reset password, set/update recovery email, set role.
+- **Counter vs. remote**: the front-desk computer is registered once as "the counter" ("šalter"); only logins on that device create a worker **shift**. An Admin logging in from any other device gets the **view-only overview** with no shift (see §2).
 
 ### 3.2 Main Dashboard (daily check-in)
 - Shows all arrivals for the selected day: **first name, last name, member number, key number**.
@@ -165,9 +167,10 @@ Rules:
 - Voiding a payment that created or extended a membership **automatically reverts** that membership change (sessions/dates).
 
 ### 3.12 Shifts & audit
-- Shifts are derived **automatically from login sessions** (who was logged in and for which period).
-- **Handover** is done via a **"switch worker"** action that closes the outgoing worker's shift and opens the incoming worker's, without fully logging out of the app.
-- A **safety net** auto-closes a shift (at the gym's configured closing time and/or after a long inactivity period) so a forgotten logout never produces a bogus multi-hour shift.
+- Shifts are derived **automatically from counter logins** (who was logged in and for which period). A shift **opens automatically** when a worker logs in at the counter.
+- **Ending a shift and logging out are separate actions**: a worker can **end the shift** ("Završi smenu") and stay in the app, and **signing out** alone does **not** end the shift. This suits the daily two-worker rotation (e.g. 09:00–15:00 and 15:00–21:00), where the changeover is normally a **handover**.
+- **Handover** is done via a **"switch worker"** ("Zameni radnika") action that re-authenticates the incoming worker (username + password), closes the outgoing worker's shift, and opens the incoming worker's — without fully logging out of the app.
+- A **safety net** auto-closes any shift left open, **20 minutes after the gym's closing time** for that day — **Mon–Fri 21:00, Saturday 18:00, Sunday 16:00** — recording the end time as the actual closing time, so a forgotten logout never produces a bogus multi-hour shift. The worker's session is not disturbed.
 - An Admin sees who worked, until when, and when the next shift started.
 - Every record carries **who entered it**; edits to past days are restricted to Admins.
 
@@ -274,11 +277,12 @@ Rules:
 ---
 
 ## 8. Confirmed decisions log
-- Login: username + password; min. 2 Admins manage accounts (no hard enforcement of the minimum).
-- Password reset: self-service via email, using a per-worker recovery email set by an Admin.
-- Password policy: minimum 8 characters.
-- One counter device; Admin may log in remotely **view-only** (no shift created).
-- Shifts from login sessions; handover via "switch worker"; safety-net auto-close.
+- Login: username + password (case-insensitive); min. 2 Admins manage accounts (no hard enforcement of the minimum). Disabled accounts cannot log in; basic lockout after repeated failed attempts (≥5 in 15 min).
+- Password reset: self-service (or Admin-initiated) via email, using a per-worker recovery email set by an Admin; reset link valid 1 hour.
+- Password policy: minimum 8 characters. Admin creating a worker sets the password directly; no forced change on first login.
+- One counter device, identified by **device registration** ("set as counter"); only counter logins create shifts. Admin may log in remotely **view-only** (no shift created).
+- Shifts from counter logins; **shift opens automatically on login**; **ending a shift and logging out are separate** (sign-out does not end the shift); handover via "switch worker" (re-auth by password).
+- Shift auto-close safety net (Europe/Belgrade): **Mon–Fri 21:00, Sat 18:00, Sun 16:00**, fired 20 minutes after closing, end time stamped to the actual closing time, without ending the auth session.
 - Trainers = worker accounts, chosen from a list.
 - One active membership per member; start from payment date or first visit.
 - Sessions valid 30 days; unused expire (override allowed by any worker with confirmation).
