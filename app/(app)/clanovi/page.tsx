@@ -1,14 +1,31 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { searchMembers } from "./actions";
+import { MembersTable } from "./members-table";
+import { CreateMemberDialog } from "./create-member-dialog";
 
 export const metadata = {
   title: "Članovi — Teretana",
 };
 
-export default function ClanoviPage() {
+export default async function ClanoviPage() {
+  const initial = await searchMembers("", { includeArchived: false, page: 0 });
+
   return (
-    <PlaceholderPage
-      title="U pripremi"
-      description="Stranica za upravljanje članovima i virtuelnim karticama biće dostupna uskoro."
-    />
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Članovi</h1>
+          <p className="text-muted-foreground text-sm">
+            Pretražite, kreirajte i upravljajte članovima.
+          </p>
+        </div>
+        <CreateMemberDialog />
+      </div>
+
+      <MembersTable
+        initialRows={initial.rows}
+        initialTotal={initial.total}
+        pageSize={initial.pageSize}
+      />
+    </div>
   );
 }

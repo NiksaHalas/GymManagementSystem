@@ -1,0 +1,376 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
+import { ArrowLeft, AlertTriangle } from "lucide-react";
+import { createClient } from "@/utils/supabase/server";
+import { getCurrentStaff } from "@/lib/auth/session";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { getMemberStatus, type MemberStatusKind } from "@/lib/members/status";
+import {
+  formatMemberNo,
+  formatFullName,
+  formatDate,
+  formatRsd,
+} from "@/lib/members/format";
+import type { TrainingType } from "@/lib/db/types";
+import { DiscountToggle, CommentEditor } from "./quick-edits";
+import { EditMemberDialog } from "./edit-member-dialog";
+import { ArchiveControls } from "./archive-controls";
+
+const STATUS_VARIANT: Record<
+  MemberStatusKind,
+  "default" | "secondary" | "destructive" | "outline"
+> = {
+  active: "default",
+  expired: "destructive",
+  paused: "secondary",
+  none: "outline",
+};
+
+const TRAINING_LABEL: Record<TrainingType, string> = {
+  otvoreni: "Otvoreni tip",
+  kardio: "Kardio",
+  individualni: "Individualni",
+  duo: "Duo",
+  vodjeni: "Vođeni",
+};
+
+const RESERVED_WARN_THRESHOLD = 3;
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { data } = await supabase
+    .from("member")
+    .select("first_name, last_name")
+    .eq("id", id)
+    .maybeSingle();
+  const name = data ? `${data.first_name} ${data.last_name}` : "Član";
+  return { title: `${name} — Teretana` };
+}
+
+export default async function MemberCardPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const staff = await getCurrentStaff();
+  const isAdmin = staff?.role === "admin";
+
+  const { data: member } = await supabase
+    .from("member")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!member) notFound();
+
+  const [membershipRes, paymentsRes, sessionsRes, reservedRes] = await Promise.all([
+    supabase
+      .from("membership")
+      .select(
+        "*, membership_type(label, training_type, package, is_time_based)",
+      )
+      .eq("member_id", id)
+      .in("status", ["aktivna", "pauzirana"])
+      .order("created_at", { ascending: false })
+      .limit(1),
+    supabase
+      .from("payment")
+      .select("id, amount_rsd, kind, is_custom_price, custom_reason, voided, paid_at, business_date, membership_type(label)")
+      .eq("member_id", id)
+      .order("paid_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("session_log")
+      .select("id, training_type, session_date, trainer:staff(username)")
+      .eq("member_id", id)
+      .order("session_date", { ascending: false })
+      .limit(100),
+    supabase
+      .from("reserved_session")
+      .select("id, training_type, session_date, amount_rsd, settled, settled_at")
+      .eq("member_id", id)
+      .order("session_date", { ascending: false }),
+  ]);
+
+  const currentMembership = membershipRes.data?.[0] ?? null;
+  const membershipType = (currentMembership?.membership_type ?? null) as unknown as
+    | { label: string; training_type: TrainingType; package: string; is_time_based: boolean }
+    | null;
+  const payments = paymentsRes.data ?? [];
+  const sessions = sessionsRes.data ?? [];
+  const reserved = reservedRes.data ?? [];
+  const unsettledCount = reserved.filter((r) => !r.settled).length;
+
+  const status = getMemberStatus(
+    currentMembership
+      ? {
+          status: currentMembership.status,
+          endDate: currentMembership.end_date,
+          sessionsLeft: currentMembership.sessions_left,
+          isTimeBased: membershipType?.is_time_based ?? null,
+        }
+      : null,
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <Button variant="ghost" size="sm" asChild>
+          <Link href="/clanovi">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Nazad na članove
+          </Link>
+        </Button>
+        <div className="flex items-center gap-2">
+          <EditMemberDialog member={member} />
+          <ArchiveControls memberId={member.id} archived={member.archived} isAdmin={isAdmin} />
+        </div>
+      </div>
+
+      {/* Header / identity */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center gap-3">
+            <CardTitle className="text-xl">
+              {formatFullName(member.first_name, member.last_name)}
+            </CardTitle>
+            <Badge variant={STATUS_VARIANT[status.kind]}>{status.label}</Badge>
+            {status.soon && (
+              <span className="text-xs text-amber-600 dark:text-amber-500">
+                ističe za {status.daysLeft} d
+              </span>
+            )}
+            {member.discount_flag && <Badge variant="outline">popust</Badge>}
+            {member.archived && <Badge variant="secondary">arhiviran</Badge>}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-muted-foreground">Broj člana</dt>
+              <dd className="font-mono">{formatMemberNo(member.member_no)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Telefon</dt>
+              <dd>{member.phone}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Član od</dt>
+              <dd>{formatDate(member.created_at)}</dd>
+            </div>
+          </dl>
+        </CardContent>
+      </Card>
+
+      {/* Quick edits */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Brze izmene</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <DiscountToggle memberId={member.id} initial={member.discount_flag} />
+          <CommentEditor memberId={member.id} initial={member.comment} />
+        </CardContent>
+      </Card>
+
+      {/* Current membership */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Trenutna članarina</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {currentMembership ? (
+            <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-muted-foreground">Tip</dt>
+                <dd>{membershipType?.label ?? "—"}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Status</dt>
+                <dd>
+                  <Badge variant={STATUS_VARIANT[status.kind]}>{status.label}</Badge>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Datum isteka</dt>
+                <dd>{formatDate(currentMembership.end_date)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Početak</dt>
+                <dd>{formatDate(currentMembership.start_date)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Preostali termini</dt>
+                <dd>
+                  {membershipType?.is_time_based
+                    ? "Neograničeno"
+                    : currentMembership.sessions_left ?? "—"}
+                </dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="text-sm text-muted-foreground">Nema aktivne članarine.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Reserved / owed sessions */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            Rezervisani (dužni) termini
+            {unsettledCount >= RESERVED_WARN_THRESHOLD && (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {unsettledCount} neizmireno
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {reserved.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nema dužnih termina.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Datum</TableHead>
+                  <TableHead>Tip treninga</TableHead>
+                  <TableHead>Iznos</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {reserved.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>{formatDate(r.session_date)}</TableCell>
+                    <TableCell>{TRAINING_LABEL[r.training_type as TrainingType]}</TableCell>
+                    <TableCell>{formatRsd(r.amount_rsd)}</TableCell>
+                    <TableCell>
+                      <Badge variant={r.settled ? "outline" : "destructive"}>
+                        {r.settled ? "Izmireno" : "Duguje"}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Payment history */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Istorija uplata</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {payments.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nema uplata.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Datum</TableHead>
+                  <TableHead>Stavka</TableHead>
+                  <TableHead>Iznos</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {payments.map((p) => {
+                  const mt = p.membership_type as unknown as { label: string } | null;
+                  return (
+                    <TableRow key={p.id} className={p.voided ? "opacity-50" : ""}>
+                      <TableCell>{formatDate(p.business_date)}</TableCell>
+                      <TableCell>
+                        {mt?.label ??
+                          (p.kind === "debt_settlement"
+                            ? "Izmirenje duga"
+                            : p.kind === "fitpass_surcharge"
+                              ? "Fitpass doplata"
+                              : "Uplata")}
+                        {p.is_custom_price && (
+                          <Badge variant="outline" className="ml-2 text-[10px]">
+                            popust
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>{formatRsd(p.amount_rsd)}</TableCell>
+                      <TableCell>
+                        {p.voided ? (
+                          <Badge variant="secondary">stornirano</Badge>
+                        ) : (
+                          <Badge variant="outline">važeća</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Session history */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Istorija termina (trening sa trenerom)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {sessions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nema evidentiranih termina.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Datum</TableHead>
+                  <TableHead>Tip treninga</TableHead>
+                  <TableHead>Trener</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sessions.map((s) => {
+                  const trainer = s.trainer as unknown as { username: string } | null;
+                  return (
+                    <TableRow key={s.id}>
+                      <TableCell>{formatDate(s.session_date)}</TableCell>
+                      <TableCell>{TRAINING_LABEL[s.training_type as TrainingType]}</TableCell>
+                      <TableCell>{trainer?.username ?? "—"}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

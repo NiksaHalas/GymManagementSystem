@@ -1,10 +1,12 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.0
-Date: 2026-06-11
+Version: 1.1
+Date: 2026-06-14
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
+
+> v1.1 records the implemented **Members ("Članovi")** feature (list + fuzzy search + virtual card + create/edit/archive) under `(app)/clanovi`, the supporting `lib/members/` and `lib/time/` helpers, and the member-search migrations (mirrored in `DB.md` §9). See §2.1, §7, and §12.
 
 ---
 
@@ -108,7 +110,8 @@ app/
   (app)/
     layout.tsx                  # authenticated shell + sidebar (implemented)
     dashboard/                  # daily check-in
-    clanovi/                    # members list + virtual card
+    clanovi/                    # members list + search + create dialog (implemented)
+      [id]/                     # virtual card: status, quick edits, membership, history, archive (implemented)
     cene/                       # membership prices
     pazar/                      # daily/monthly/yearly takings
     smene/                      # shifts (admin)
@@ -123,9 +126,10 @@ lib/
   nav.ts                        # sidebar nav items + active-state + page titles (implemented)
   auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
   shifts/                       # shift lifecycle server actions (implemented)
+  members/                      # member zod schema, status derivation, types, formatting (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
   offline/                      # IndexedDB queue + sync engine
-  time/                         # Europe/Belgrade business-day helpers
+  time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts)
 utils/
   supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
@@ -217,6 +221,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 
 | Feature (PRD) | Implementation |
 |---|---|
+| Members list + search + virtual card | **(implemented)** `(app)/clanovi`: paginated/fuzzy search via the `search_members` RPC (`DB.md` §9), create/edit dialogs (`react-hook-form` + Zod, duplicate-phone soft warning), and a virtual-card page (`clanovi/[id]`) showing status, current membership, payment/session history, reserved (owed) sessions with the warn-after-3 marker, quick discount toggle + comment editor, and archive/restore (archive blocked while owed sessions are unsettled; restore Admin-only). Status is derived at read time in `lib/members/status.ts`. Server actions in `clanovi/actions.ts` set audit columns (`created_by`/`updated_by`) for RLS |
 | Daily check-in dashboard | Server Component for the day's list + Client check-in form; `command`/`popover` for fast member search (name/surname/member_no/phone) |
 | Key occupancy (22) | Derived from today's open check-ins; "otišao" sets `key_returned`; shared keys = latest assignment wins |
 | Membership status badges | Computed from `memberships` (active/expired/paused/none); red "istekla članarina" marker |
@@ -280,6 +285,6 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 
 ## 12. Phased delivery (maps to SoW)
 - **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer, "U pripremi" placeholder pages for `clanovi`/`cene`/`pazar`).
-- **Phase 1 — Core (MVP)**: members CRUD + card + search; membership types/prices; dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
+- **Phase 1 — Core (MVP)**: **members CRUD + card + search implemented** (`(app)/clanovi` list with fuzzy `search_members` RPC + pagination, create/edit dialogs with duplicate-phone warning, virtual-card page with membership/payment/session/reserved-session history, discount toggle, comment editor, archive/restore; member-search migrations + `pg_trgm` per `DB.md` §9). **Remaining:** membership types/prices; dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
 - **Phase 2 — Advanced**: trainer sessions + session deduction + card history; reserved/owed sessions + settlement; pause/resume; Fitpass + surcharge; key search; shifts + Admin views; monthly/yearly takings; soon-to-expire list; Admin export.
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

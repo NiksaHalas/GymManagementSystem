@@ -550,7 +550,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 ---
 
 ## 7. Index summary (hot paths)
-- Member search: `member_name_idx`, `member_phone_idx`, `member_member_no_uidx`.
+- Member search: `member_name_idx`, `member_phone_idx`, `member_member_no_uidx`, plus trigram GIN (`member_first_name_trgm_idx`, `member_last_name_trgm_idx`) for fuzzy name search (§9).
 - Dashboard (day): `checkin_business_date_idx`, `checkin_open_key_idx`.
 - Takings: `payment_business_date_idx` (partial, excludes voided).
 - Soon-to-expire: `membership_end_date_idx`.
@@ -613,3 +613,15 @@ select cron.schedule('auto-close-shifts', '*/10 14-20 * * *',
 ```
 - **DST-proof:** the schedule window is in UTC but the closing logic is computed in `Europe/Belgrade` inside the function, so it stays correct across CET/CEST.
 - `EXECUTE` is revoked from `public`/`anon`/`authenticated` so the `SECURITY DEFINER` function is not a public RPC endpoint.
+
+---
+
+## 9. Member search (`pg_trgm`)
+
+The Members page uses fuzzy search over name / surname / member number. Migrations: `20260614150000_member_search`, `20260614151000_harden_member_search`, `20260614152000_member_search_drop_phone`.
+
+- Enables `pg_trgm` (in the `extensions` schema) and adds trigram GIN indexes on `member.first_name`, `member.last_name` (used by `ILIKE`/`similarity`).
+- `search_members(q text, include_archived boolean, lim int, off int)` (`security invoker`, `search_path = public, extensions`) returns paginated member rows enriched with the single active/paused membership summary (`status`, `label`, `end_date`, `sessions_left`, `is_time_based`) plus a `total_count` for pagination.
+  - Empty `q` → browse all active (or all when `include_archived`) ordered by `lower(last_name), lower(first_name)`.
+  - Non-empty `q` → name match via `ILIKE` + `similarity` ordering; digit-normalized prefix match on `member_no`. Phone is intentionally not searchable (removed in `20260614152000`).
+- `EXECUTE` granted to `authenticated`, revoked from `anon`/`public`.
