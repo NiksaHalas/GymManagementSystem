@@ -1,12 +1,13 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.1
-Date: 2026-06-14
+Version: 1.2
+Date: 2026-06-15
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
 
 > v1.1 records the implemented **Members ("Članovi")** feature (list + fuzzy search + virtual card + create/edit/archive) under `(app)/clanovi`, the supporting `lib/members/` and `lib/time/` helpers, and the member-search migrations (mirrored in `DB.md` §9). See §2.1, §7, and §12.
+> v1.2 records the implemented **Dashboard (daily check-in)** under `(app)/dashboard`, `lib/dashboard/`, Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10), the `training_category` refactor on `/cene`, session/auth deduplication (`lib/supabase/server-client.ts`, `React.cache()` + `getUser()` in server components), migration `20260615140000_dashboard_support` (applied remotely as `dashboard_support`), and member-search cleanup migrations `20260615200000` / `20260615210000` (no phone; single RPC overload).
 
 ---
 
@@ -44,20 +45,22 @@ Dev dependencies:
 Already wired in the repo:
 - `utils/supabase/server.ts` — server-side Supabase client (cookie-based, for RSC/server actions).
 - `utils/supabase/client.ts` — browser Supabase client.
-- `utils/supabase/middleware.ts` + root `middleware.ts` — refreshes the auth session on every request (calls `supabase.auth.getUser()`).
+- `utils/supabase/middleware.ts` + root `middleware.ts` — refreshes the auth session on every HTTP request (`supabase.auth.getUser()` once in middleware).
+- `lib/supabase/server-client.ts` — cached Supabase server client per RSC request (`React.cache()`).
 - `utils/resend/client.ts` + `utils/resend/send.ts` — Resend client and `sendEmail()` helper.
 - `components/ui/button.tsx` — first shadcn primitive; `lib/utils.ts` exposes `cn()`.
 - `components.json` — shadcn config (`style: radix-luma`, `baseColor: zinc`, aliases for `@/components`, `@/components/ui`, `@/lib`, `@/hooks`).
 - `app/layout.tsx` + `app/globals.css` — root layout and Tailwind v4 theme.
 
-### 1.2 To add during development
-- shadcn primitives as needed (pulled via the shadcn MCP per project rule): `input`, `label`, `form`, `dialog`, `select`, `table`, `card`, `badge`, `sidebar`, `sonner`/`toast`, `command` (search), `popover`, `tabs`, `alert-dialog`, `calendar`/date picker.
-  - **Installed for the auth system:** `input`, `label`, `form`, `card`, `sonner`, `alert-dialog`, `dialog`, `dropdown-menu`, `table`, `badge`, `switch`, `separator`, `select`, `textarea`. (`form.tsx` was hand-written to the standard shadcn pattern because the `radix-luma` style registry did not emit it via the CLI.)
-  - **Installed for the app shell / sidebar:** `sidebar`, `sheet`, `tooltip`, `skeleton` (plus the `use-mobile` hook at `@/hooks/use-mobile`). The `(app)` shell wraps pages in `SidebarProvider` + `TooltipProvider`; navigation, the worker menu, the "Šalter" badge, and shift controls live in `components/app-sidebar.tsx`, with a slim top header (`components/app-header.tsx`) carrying the sidebar toggle and page title.
-- `@tanstack/react-query` (server-state caching + optimistic updates for fast check-in).
-- A PWA layer: service worker + offline store (see §6). Options: `next-pwa`/`@serwist/next` for the service worker, and **IndexedDB** (via `idb` or `Dexie`) for the offline queue.
-- **Zod for input validation** in server actions/forms — **installed**, together with `react-hook-form` + `@hookform/resolvers` for the auth forms.
-- The companion backup script (Node) — see §8.
+### 1.2 Installed UI & libraries
+- shadcn primitives: `input`, `label`, `form`, `card`, `sonner`, `alert-dialog`, `dialog`, `dropdown-menu`, `table`, `badge`, `switch`, `separator`, `select`, `textarea`, `sidebar`, `sheet`, `tooltip`, `skeleton`, **`command`**, **`popover`**, **`checkbox`**, **`tabs`**, `input-group` (dashboard search + Fitpass/check-in dialogs; cene tabs).
+- **Zod**, **react-hook-form**, **@hookform/resolvers** — auth and member forms.
+- **`@tanstack/react-query`** — not yet installed; dashboard v1 uses `router.refresh()` + server actions (same pattern as `clanovi`).
+
+### 1.3 Still to add
+- `@tanstack/react-query` (optional until offline/optimistic check-in in Phase 3).
+- PWA layer: service worker + IndexedDB offline queue (see §6).
+- Companion backup script (Node) — see §8.
 
 > **UI rule:** always use shadcn/ui primitives from `@/components/ui/*`, pulled/verified via the shadcn MCP, before writing custom UI. Keep styling in Tailwind and reuse shadcn variants.
 
@@ -96,9 +99,9 @@ flowchart LR
     Backup -->|"write file"| USB[("Local USB")]
 ```
 
-- **Rendering**: Server Components fetch data through the server Supabase client; interactive pieces (check-in form, payment dialog, search) are Client Components using React Query for caching and optimistic updates.
-- **Mutations**: prefer **Server Actions** for online writes (member CRUD, prices, account management). Check-in and payment writes also go through an offline-aware path (§6) so they can be queued when offline.
-- **Session**: the root `middleware.ts` keeps the Supabase auth cookie fresh on every request and is the natural place to enforce route-level auth/role gating.
+- **Rendering**: Server Components fetch data through the cached server Supabase client; interactive dashboard pieces (search, dialogs, table actions) are Client Components.
+- **Mutations**: **Server Actions** for online writes. Check-in mutations call Postgres RPCs (`create_checkin`, `void_checkin`) for atomic side effects (session deduction, reserved debt, first-visit activation).
+- **Session**: `middleware.ts` calls `getUser()` once per HTTP request to refresh/validate the JWT cookie. Server Components call cached `getUser()` via `lib/auth/session.ts` (one Auth API call per render tree). See §3.5.
 
 ### 2.1 Proposed folder structure
 ```
@@ -109,13 +112,24 @@ app/
     reset/                      # set new password (consumes recovery link)
   (app)/
     layout.tsx                  # authenticated shell + sidebar (implemented)
-    dashboard/                  # daily check-in
+    dashboard/                  # daily check-in (implemented)
+      page.tsx                  # server fetch, counter vs remote branch
+      actions.ts                # check-in, Fitpass, otišao, key update, void
+      dashboard-counter.tsx     # operativni layout (counter + today)
+      dashboard-overview.tsx    # remote admin read-only
+      date-nav.tsx              # ?date= navigacija
+      checkin-search.tsx        # Command combobox + Novi član + Fitpass
+      checkin-dialog.tsx        # ključ, trener sesija, komentar popup
+      fitpass-dialog.tsx
+      arrivals-table.tsx
+      keys-panel.tsx
+      soon-expire-badge.tsx
     clanovi/                    # members list + search + create dialog (implemented)
       [id]/                     # virtual card: status, quick edits, membership, history, archive (implemented)
     cene/                       # membership prices (implemented: tabbed catalog, inline price edit)
       actions.ts, cene-client.tsx, price-cell.tsx, add-type-dialog.tsx
-    pazar/                      # daily/monthly/yearly takings
-    smene/                      # shifts (admin)
+    pazar/                      # daily/monthly/yearly takings (placeholder page)
+    smene/                      # shifts admin view (stub page; lifecycle in lib/shifts/)
     nalozi/                     # accounts (admin) + counter-device toggle (implemented)
   api/
     admin/accounts/             # service-role account management (implemented)
@@ -128,7 +142,10 @@ lib/
   auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
   shifts/                       # shift lifecycle server actions (implemented)
   members/                      # member zod schema, status derivation, types, formatting (implemented)
-  catalog/                      # membership catalog view-models, zod schemas, package formatting (implemented)
+  catalog/                      # membership catalog view-models (implemented)
+  dashboard/                    # dashboard queries, zod schemas, format (implemented)
+  supabase/
+    server-client.ts            # cached getServerSupabase() per RSC request (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
   offline/                      # IndexedDB queue + sync engine
   time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts)
@@ -139,7 +156,7 @@ supabase/
   migrations/                   # SQL migrations (see DB.md)
 scripts/
   seed-admins.mjs               # one-time admin seed (implemented)
-  backup-usb.mjs                # companion backup script
+  backup-usb.mjs                # companion backup script (planned, Phase 3)
 ```
 
 ### 2.2 Training categories (`training_category`)
@@ -150,6 +167,33 @@ The former `training_type` Postgres enum is replaced by a **`training_category` 
 
 `membership_type` references `training_category_id` (unique per `(category, package)`). Billing model (time-based vs session-based) stays on `membership_type.is_time_based`. Discount prices remain tied to the `otvoreni` category code.
 
+### 2.3 Dashboard (daily check-in)
+Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
+
+**Display modes** (`page.tsx` branches on `isCounterDevice()` + role + `?date=`):
+| Mode | Condition | UI |
+|---|---|---|
+| **Operativni** | Counter cookie + today's business date | Full check-in: search, dialogs, keys panel, table actions |
+| **Read-only worker** | No counter cookie, any date | Same layout minus mutations; amber banner |
+| **Remote admin overview** | Admin + no counter cookie | `dashboard-overview.tsx`: day stats, arrivals list, link to `/pazar` |
+
+**Data** (`lib/dashboard/queries.ts`):
+- `fetchDayCheckins(businessDate)` — arrivals for the day (excludes voided), enriches with member + membership status + read-only payment badge for today.
+- `fetchKeyOccupancy(businessDate)` — open keys (`not key_returned`, `not voided`) with last holder.
+- `fetchSoonToExpire()` — memberships ending within 3 days.
+- `fetchDayStats(businessDate, keyHolders?)` — counts for admin overview.
+
+**Mutations** (`dashboard/actions.ts`): all guarded by `requireCounterToday()` (counter device + today). Call Postgres RPCs for atomic side effects:
+- `checkInMember` → `create_checkin`
+- `checkInFitpass` → `create_checkin` (`is_fitpass`, optional `is_group_fitpass` flag)
+- `markLeft` → `key_returned` update
+- `updateCheckinKey` → key reassignment on today's open check-in
+- `voidCheckin` → `void_checkin`
+
+**UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (key, trainer tick + category + trainer select, comment popup, reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
+
+**Deferred from dashboard v1** (see `PRD.md` §9): payment dialog on dashboard, group Fitpass +300 RSD payment (flag only), offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI.
+
 ---
 
 ## 3. Authentication & authorization
@@ -157,7 +201,7 @@ The former `training_type` Postgres enum is replaced by a **`training_category` 
 ### 3.1 Username + password (no public email)
 - Supabase Auth requires an email identity, so each worker maps to a **synthetic internal email**: `"<username>@gym.local"` (domain is internal, never sent mail). Helpers in `lib/auth/username.ts` normalize (trim + lowercase), validate (letters/digits/`._-`, min 3), and map `username → email`.
 - Login flow (`app/(auth)/login/actions.ts`): the UI takes `username` + `password`, the server maps `username → synthetic email`, calls `supabase.auth.signInWithPassword`, then checks `staff.active` (disabled accounts are signed back out and rejected).
-- **Rate limiting:** failed attempts are recorded in the `login_attempt` table keyed by `username + IP`; **≥ 5 fails in 15 min** blocks further attempts until the window passes. Successful login clears the key. (Uses the service-role client; see `DB.md` §3.12.)
+- **Rate limiting:** failed attempts are recorded in the `login_attempt` table keyed by `username + IP`; **≥ 5 fails in 15 min** blocks further attempts until the window passes. Successful login clears the key. (Uses the service-role client; see `DB.md` §3.13.)
 - A `staff` profile row (see `DB.md`) is linked 1:1 to `auth.users.id` and stores `username`, `role`, `recovery_email`, and `active`.
 
 ### 3.2 Password reset (Resend)
@@ -178,12 +222,21 @@ The former `training_type` Postgres enum is replaced by a **`training_category` 
 - The counter PC is marked once via an Admin-only action that writes a **signed, httpOnly `gym_counter` cookie** (HMAC-SHA256 over `COUNTER_DEVICE_SECRET`, 1-year TTL). `lib/auth/counter.ts` exposes `isCounterDevice()`, `setCounterDevice()`, `unsetCounterDevice()`; the toggle lives on the Accounts page.
 - On a counter device, the `(app)` layout auto-ensures an open shift on each load. On any other device the cookie is absent, so **no shift is created** — this is how an Admin logging in from home gets the read-only overview.
 
+### 3.5 Session reads & Auth API rate limits
+- **Security**: never trust `getSession()` / cookie JWT alone — use **`getUser()`**, which validates the token with Supabase Auth.
+- **Pattern** (implemented in `lib/auth/session.ts` + `lib/supabase/server-client.ts`):
+  - **`middleware.ts`**: one `getUser()` per HTTP request — refreshes session cookies and gates routes.
+  - **Server Components / server actions**: `getSessionUser()` and `getCurrentStaff()` call **`getUser()`** wrapped in **`React.cache()`** so layout + page share one lookup per render (not one per component).
+  - **`getServerSupabase()`**: cached Supabase server client per RSC request (same cookie store).
+- **Cost**: at most **two** `getUser()` calls per full page load (middleware + RSC cache miss) — acceptable vs. the prior N-call pattern that hit rate limits.
+- **Guards**: `requireUser()` / `requireAdmin()` still redirect on missing/disabled accounts; sign-out on disabled uses `createClient()` directly when mutation is required.
+
 ---
 
 ## 4. Data layer
 
 - **Supabase Postgres** with the schema in `DB.md`. All access goes through RLS-protected tables.
-- **Clients**: `utils/supabase/server.ts` for RSC/server actions/route handlers; `utils/supabase/client.ts` for browser-side reads and realtime if needed.
+- **Clients**: `lib/supabase/server-client.ts` (`getServerSupabase`, cached per request) for RSC/dashboard queries; `utils/supabase/server.ts` for server actions that need a fresh client; `utils/supabase/client.ts` for browser-side reads and realtime if needed.
 - **Types**: generate TypeScript types from the database (`supabase gen types typescript`) into `lib/db/types.ts` for end-to-end type safety.
 - **Migrations**: SQL migrations live in `supabase/migrations/` and are the source of truth for the schema (`DB.md` mirrors them).
 - **Query practices** (per the Supabase Postgres best-practices skill): index every foreign key, use partial/composite indexes for hot lookups (member search, daily takings by business date), keep transactions short, and rely on RLS for tenant/role isolation.
@@ -232,25 +285,26 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Feature (PRD) | Implementation |
 |---|---|
 | Members list + search + virtual card | **(implemented)** `(app)/clanovi`: paginated/fuzzy search via the `search_members` RPC (`DB.md` §9), create/edit dialogs (`react-hook-form` + Zod, duplicate-phone soft warning), and a virtual-card page (`clanovi/[id]`) showing status, current membership, payment/session history, reserved (owed) sessions with the warn-after-3 marker, quick discount toggle + comment editor, and archive/restore (archive blocked while owed sessions are unsettled; restore Admin-only). Status is derived at read time in `lib/members/status.ts`. Server actions in `clanovi/actions.ts` set audit columns (`created_by`/`updated_by`) for RLS |
-| Daily check-in dashboard | Server Component for the day's list + Client check-in form; `command`/`popover` for fast member search (name/surname/member_no/phone) |
-| Key occupancy (22) | Derived from today's open check-ins; "otišao" sets `key_returned`; shared keys = latest assignment wins |
-| Membership status badges | Computed from `memberships` (active/expired/paused/none); red "istekla članarina" marker |
-| Trainer session + session deduction | Check-in writes `with_trainer`, `training_category_id`, `trainer_id`; transaction decrements `sessions_left` and inserts a `session_log` row |
-| Reserved (owed) session | Insert `reserved_sessions` with the **captured daily price**; warn after 3; settle at next payment |
-| Payments / custom price / discount | Payment dialog with confirmation for custom price (< standard, > 0) + optional reason; auto reduced price list for discount-flagged members on Open type |
+| Daily check-in dashboard | **(implemented v1)** `(app)/dashboard`: see §2.3. Counter + today = full ops; remote Admin = overview; workers off-counter = read-only. Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10). Refresh via `router.refresh()` after mutations. |
+| Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows holder. **Key-number search UI** not yet built. |
+| Membership status badges | **(implemented)** on dashboard rows via member status; red "istekla članarina" marker |
+| Trainer session + session deduction | **(implemented)** check-in dialog + `create_checkin` RPC: optional trainer tick, decrement, `session_log`, reserved session at 0 sessions. **Non-trainer** Open 8/1 & 12/1 auto-deduct **deferred**. |
+| Reserved (owed) session | **(partial)** creation at check-in via RPC; display on member card; warn-after-3 on check-in dialog; settlement on `/pazar` **not yet built** |
+| Soon-to-expire (≤3 days) | **(implemented)** `fetchSoonToExpire` + header badge on dashboard |
+| Fitpass | **(partial v1)** anonymous check-in + mandatory key via `fitpass-dialog`; `is_group_fitpass` flag stored; **+300 RSD payment deferred** to `/pazar` |
+| Payments / custom price / discount | **(not on dashboard v1)** read-only payment badge on arrival rows; full payment flow → `/pazar` + member card |
 | Takings ("pazar") | Aggregations by business date; net of voided payments; monthly/yearly views gated to Admin via RLS |
 | Payment void + membership revert | Transaction marks payment voided and reverts the linked membership change |
 | Prices admin | **(implemented)** `(app)/cene`: tabbed by `training_category`, inline price edit (Admin), add/deactivate types & categories; read-only for workers. Server actions in `cene/actions.ts`; view-models in `lib/catalog/` |
 | Shifts | See §5 |
-| Soon-to-expire (≤3 days) | Query memberships with `end_date <= today + 3` |
 | Reports export (Admin) | Route handler streams CSV/JSON of the selected report |
 | Notifications | In-app only via toasts/badges (`sonner`); no email/SMS to members |
 
 ---
 
-## 8. Backup to USB
+## 8. Backup to USB *(planned — Phase 3; not yet implemented)*
 
-- A **companion Node script** (`scripts/backup-usb.mjs`) runs on the counter computer via a **Windows Task Scheduler** job **3× per day**.
+Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the repo**) on the counter computer, scheduled via **Windows Task Scheduler** **3× per day**.
 - It produces a **full database dump** and writes it to the mounted USB path. Two viable approaches:
   - `pg_dump` against the Supabase Postgres connection string (richest, restorable SQL), or
   - a Supabase **service-role** client that exports all tables to JSON/CSV when `pg_dump` isn't available on the machine.
@@ -285,7 +339,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 ---
 
 ## 11. Non-functional implementation notes
-- **Performance**: React Query caching + indexed search columns keep check-in/search at a couple of seconds for ~1,000 members.
+- **Performance**: indexed search + server-side fetch; dashboard mutations call RPCs in one round-trip; `React.cache()` on session/client avoids redundant Auth API calls. React Query not yet used — pages refresh via `router.refresh()` after server actions.
 - **Security**: RLS is the primary guard; app guards are UX only. Service-role key stays server/local-side.
 - **Audit**: `created_by`/`updated_by` + `created_at`/`updated_at` on mutable tables; past-day edits restricted to Admins by RLS.
 - **i18n/format**: Serbian latinica strings; RSD currency formatting; all timestamps stored as `timestamptz`, business day computed in `Europe/Belgrade`.
@@ -294,7 +348,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer, "U pripremi" placeholder pages for `pazar`).
-- **Phase 1 — Core (MVP)**: **members CRUD + card + search implemented** (`(app)/clanovi` …). **Membership prices implemented** (`(app)/cene` with `training_category` lookup refactor per `DB.md` §3.4). **Remaining:** dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
-- **Phase 2 — Advanced**: trainer sessions + session deduction + card history; reserved/owed sessions + settlement; pause/resume; Fitpass + surcharge; key search; shifts + Admin views; monthly/yearly takings; soon-to-expire list; Admin export.
+- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer).
+- **Phase 1 — Core (MVP)**: **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`, tabbed catalog + inline Admin edit). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Remaining for MVP:** cash payment + custom price + discount list + daily takings (`/pazar`), group Fitpass +300 settlement.
+- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; payment void + membership revert; monthly/yearly takings; Admin export. *(Trainer sessions, reserved debt at check-in, Fitpass entry, key occupancy, soon-to-expire, shifts, remote admin overview — **done in dashboard v1**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

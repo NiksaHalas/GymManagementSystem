@@ -1,11 +1,12 @@
 # PRD — Gym Management System
 
-Version: 1.2
+Version: 1.3
 Date: 2026-06-15
 Status: Approved for development
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
+> v1.3 adds **§9 Implementation status** tracking what is live in the app vs. deferred.
 
 ---
 
@@ -68,7 +69,7 @@ Notes:
 - Shows all arrivals for the selected day: **first name, last name, member number, key number**.
 - If the membership is expired at check-in → a red **"istekla članarina"** marker next to the entry (check-in is still allowed).
 - If the member pays that day → the entry shows **which membership was paid and how much**.
-- **Member search** at check-in: by first name, last name, member number, and phone.
+- **Member search** at check-in: by first name, last name, and member number.
 - **Multiple arrivals of the same member** in one day are allowed (each is a separate record).
 - If the member has a trainer-based membership, the worker may **tick the training type**: "vođeni" (guided/group), "individualni", or "duo":
   - If a trainer-based type is ticked → arrival recorded, **1 session deducted**, the session date is **written to the member's card**, and a **trainer is selected** (from the worker accounts list).
@@ -78,6 +79,9 @@ Notes:
 - **Back-navigation through days** (view previous days).
 
 ### 3.3 Members & virtual card
+
+**List & search** (page "Članovi"): fuzzy search by **first name, last name, and member number**; phone is shown on rows but **not searchable**. Paginated browse when the search box is empty. Quick-create from the list.
+
 Card fields:
 - Member number (auto-incrementing, permanent, never reused).
 - First name, Last name.
@@ -302,4 +306,33 @@ Rules:
 - Notifications visual only; "soon to expire" threshold 3 days.
 - Backup: automatic USB 3× daily + cloud copy.
 - Phone required; family sharing allowed with a duplicate warning (not a hard unique rule).
-- Membership prices page: Admin manages categories, types, and prices (soft-deactivate, no hard delete); workers read-only; discount prices Open-type-only.
+
+---
+
+## 9. Implementation status (as of 2026-06-15)
+
+This section tracks delivery against the requirements above. Technical detail lives in `Tech.md` / `DB.md`.
+
+### 9.1 Done
+| Area | Scope |
+|---|---|
+| **Auth & shell** | Login, password reset, accounts, counter-device cookie, shifts, sidebar nav |
+| **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
+| **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
+| **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |
+
+### 9.2 Dashboard v1 — explicitly deferred
+These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
+
+- **Payment on dashboard** — cash payment, custom price, discount price list (→ `/pazar` and member card).
+- **Group Fitpass +300 RSD** — check-in stores the group flag only; surcharge payment and takings inclusion come with `/pazar`.
+- **Auto session deduction** for non-trainer Open packages (8/1, 12/1) on solo arrival — trainer-tick path only in v1.
+- **Key-number search UI** — enter key → show last holder (occupancy panel shows current holders only).
+- **Offline / PWA** — check-in and payment queue when internet is down.
+
+### 9.3 Not started (MVP remainder)
+- **Pazar** — daily takings, payment recording, reserved-session settlement, payment void.
+- **Pause / resume** membership.
+- **Monthly / yearly takings** + Admin export.
+- **USB backup** companion script (scheduled 3×/day).
+- **Smene** — Admin shift history UI (`/smene` is a stub; shift lifecycle runs in the background).

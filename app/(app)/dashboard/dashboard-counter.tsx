@@ -1,0 +1,94 @@
+"use client";
+
+import * as React from "react";
+import { DateNav } from "@/app/(app)/dashboard/date-nav";
+import { SoonExpireBadge } from "@/app/(app)/dashboard/soon-expire-badge";
+import { CheckinSearch } from "@/app/(app)/dashboard/checkin-search";
+import { CheckinDialog } from "@/app/(app)/dashboard/checkin-dialog";
+import { FitpassDialog } from "@/app/(app)/dashboard/fitpass-dialog";
+import { ArrivalsTable } from "@/app/(app)/dashboard/arrivals-table";
+import { KeysPanel } from "@/app/(app)/dashboard/keys-panel";
+import type {
+  DashboardCheckinRow,
+  KeyHolder,
+  SoonExpireMember,
+  StaffOption,
+} from "@/lib/dashboard/types";
+
+interface DashboardCounterProps {
+  businessDate: string;
+  checkins: DashboardCheckinRow[];
+  keyHolders: KeyHolder[];
+  soonExpire: SoonExpireMember[];
+  staffOptions: StaffOption[];
+  canOperate: boolean;
+}
+
+export function DashboardCounter({
+  businessDate,
+  checkins,
+  keyHolders,
+  soonExpire,
+  staffOptions,
+  canOperate,
+}: DashboardCounterProps) {
+  const [checkinMemberId, setCheckinMemberId] = React.useState<string | null>(null);
+  const [checkinOpen, setCheckinOpen] = React.useState(false);
+  const [fitpassOpen, setFitpassOpen] = React.useState(false);
+
+  const occupiedOpenKeys = keyHolders
+    .filter((k) => k.isOpen)
+    .map((k) => k.keyNo);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <DateNav businessDate={businessDate} />
+        <SoonExpireBadge members={soonExpire} />
+      </div>
+
+      {canOperate && (
+        <CheckinSearch
+          onSelectMember={(id) => {
+            setCheckinMemberId(id);
+            setCheckinOpen(true);
+          }}
+          onFitpass={() => setFitpassOpen(true)}
+        />
+      )}
+
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1">
+          <ArrivalsTable
+            rows={checkins}
+            canOperate={canOperate}
+            occupiedOpenKeys={occupiedOpenKeys}
+          />
+        </div>
+        <aside className="w-full shrink-0 lg:w-52 xl:w-56">
+          <KeysPanel holders={keyHolders} />
+        </aside>
+      </div>
+
+      {canOperate && (
+        <>
+          <CheckinDialog
+            memberId={checkinMemberId}
+            open={checkinOpen}
+            onOpenChange={(o) => {
+              setCheckinOpen(o);
+              if (!o) setCheckinMemberId(null);
+            }}
+            staffOptions={staffOptions}
+            occupiedOpenKeys={occupiedOpenKeys}
+          />
+          <FitpassDialog
+            open={fitpassOpen}
+            onOpenChange={setFitpassOpen}
+            occupiedKeys={occupiedOpenKeys}
+          />
+        </>
+      )}
+    </div>
+  );
+}

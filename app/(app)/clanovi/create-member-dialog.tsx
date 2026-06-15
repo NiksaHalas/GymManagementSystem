@@ -40,9 +40,30 @@ const DEFAULT_VALUES: MemberFormValues = {
   comment: "",
 };
 
-export function CreateMemberDialog() {
+interface CreateMemberDialogProps {
+  /** Controlled open state (optional — uncontrolled when omitted). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Called after successful create instead of navigating to card. */
+  onCreated?: (memberId: string) => void;
+  /** Navigate to member card after create (default true). */
+  redirectToCard?: boolean;
+  /** Custom trigger; omit for default button. Pass null to hide trigger. */
+  trigger?: React.ReactNode | null;
+}
+
+export function CreateMemberDialog({
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+  onCreated,
+  redirectToCard = true,
+  trigger,
+}: CreateMemberDialogProps = {}) {
   const router = useRouter();
-  const [open, setOpen] = React.useState(false);
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
+
   const [duplicates, setDuplicates] = React.useState<DuplicatePhoneMatch[] | null>(null);
   const [pendingValues, setPendingValues] = React.useState<MemberFormValues | null>(null);
 
@@ -60,7 +81,14 @@ export function CreateMemberDialog() {
     toast.success(`Član "${values.first_name} ${values.last_name}" je kreiran.`);
     form.reset(DEFAULT_VALUES);
     setOpen(false);
-    router.push(`/clanovi/${res.id}`);
+
+    if (onCreated) {
+      onCreated(res.id);
+    } else if (redirectToCard) {
+      router.push(`/clanovi/${res.id}`);
+    } else {
+      router.refresh();
+    }
   }
 
   async function onSubmit(values: MemberFormValues) {
@@ -73,15 +101,21 @@ export function CreateMemberDialog() {
     await persist(values);
   }
 
+  const defaultTrigger = (
+    <Button>
+      <UserPlus className="mr-2 h-4 w-4" />
+      Novi član
+    </Button>
+  );
+
   return (
     <>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button>
-            <UserPlus className="mr-2 h-4 w-4" />
-            Novi član
-          </Button>
-        </DialogTrigger>
+        {trigger !== null && (
+          <DialogTrigger asChild>
+            {trigger ?? defaultTrigger}
+          </DialogTrigger>
+        )}
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Novi član</DialogTitle>

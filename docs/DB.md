@@ -1,13 +1,14 @@
 # DB — Database Schema
 
-Version: 1.3
+Version: 1.4
 Date: 2026-06-15
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
 > v1.1 aligns this doc with the applied migrations in `supabase/migrations/` (UUID defaults, helper functions, the `handle_new_user` trigger, and the implemented RLS policies). Refinement deltas vs. v1.0 are called out inline.
-> v1.2 adds the authentication-system artifacts: the `login_attempt` rate-limit table (§3.12) and the `pg_cron` shift auto-close job (§8). Migrations: `20260614142000_add_login_attempt_table`, `20260614142100_pgcron_shift_autoclose`.
+> v1.2 adds the authentication-system artifacts: the `login_attempt` rate-limit table (§3.13) and the `pg_cron` shift auto-close job (§8). Migrations: `20260614142000_add_login_attempt_table`, `20260614142100_pgcron_shift_autoclose`.
 > v1.3 replaces the `training_type` enum with a runtime-manageable `training_category` lookup table; `membership_type`, `checkin`, `session_log`, and `reserved_session` now reference `training_category_id`. Migration: `20260615120000_training_category_refactor`.
+> v1.4 adds dashboard support: `checkin.is_group_fitpass`, soft-void columns, updated `checkin_open_key_idx`, and RPCs `create_checkin`, `void_checkin`, `capture_daily_price`. Migration: `20260615140000_dashboard_support` (applied to remote Supabase as `dashboard_support`, version `20260615192407`). Phone matching in `search_members` was briefly restored in v1.4 and removed again in `20260615200000_member_search_no_phone`; ambiguous 5-arg `match_phone` overload dropped in `20260615210000_search_members_single_overload`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -281,7 +282,7 @@ create unique index membership_one_active_uidx
 - **Expiry**: a scheduled job (or read-time computation) flips `aktivna → istekla` when `end_date < today` and sessions are exhausted/expired. Remaining sessions may still be used after expiry via override.
 - **Renewal**: a new `membership` row (new period); prior rows remain as history.
 
-### 3.7 `payment`
+### 3.8 `payment`
 Cash payments. `member_id` is null for anonymous Fitpass.
 
 ```sql
@@ -321,7 +322,7 @@ create index payment_business_date_idx       on payment (business_date) where no
 - **Void** sets `voided=true` (kept in history) and a transaction **reverts the linked `membership`** change (restore `sessions_left`, roll back `end_date`/period).
 - **Custom price** enforced in app: `0 < amount_rsd < standard price`.
 
-### 3.8 `checkin`
+### 3.9 `checkin`
 Daily arrivals. `member_id` null = Fitpass. Determines key occupancy.
 
 ```sql
@@ -336,8 +337,12 @@ create table checkin (
   trainer_id            uuid references staff (id),                         -- set when with_trainer
   decremented_session boolean not null default false,
   is_fitpass          boolean not null default false,
+  is_group_fitpass    boolean not null default false,   -- group Fitpass (+300 RSD charged later via payment)
   key_returned        boolean not null default false,                     -- "otišao" sets true
   checked_out_at      timestamptz,
+  voided              boolean not null default false,   -- soft void (worker today / admin any day via void_checkin RPC)
+  voided_at           timestamptz,
+  voided_by           uuid references staff (id),
   business_date       date not null,                                      -- Europe/Belgrade day
   created_at          timestamptz not null default now(),
   created_by          uuid references staff (id),
@@ -345,7 +350,8 @@ create table checkin (
   updated_at          timestamptz not null default now(),
   check (not with_trainer or (training_category_id is not null and trainer_id is not null)),
   check (is_fitpass or member_id is not null),                            -- member required unless Fitpass
-  check (not is_fitpass or key_no is not null)                            -- Fitpass requires a key
+  check (not is_fitpass or key_no is not null),                            -- Fitpass requires a key
+  check (not is_group_fitpass or is_fitpass)
 );
 
 create index checkin_member_id_idx    on checkin (member_id);
@@ -355,16 +361,19 @@ create index checkin_membership_id_idx on checkin (membership_id);
 create index checkin_key_no_idx        on checkin (key_no);
 create index checkin_created_by_idx    on checkin (created_by);
 create index checkin_business_date_idx on checkin (business_date);
+create index checkin_voided_by_idx     on checkin (voided_by);
 -- currently-out keys (occupancy) and last holder of a key
-create index checkin_open_key_idx      on checkin (key_no, created_at desc) where not key_returned;
+create index checkin_open_key_idx      on checkin (key_no, created_at desc) where not key_returned and not voided;
 ```
 - **Key occupancy**: keys with an open (`not key_returned`) check-in for the current business day.
 - **Shared keys**: multiple open check-ins may reference the same `key_no`; the **latest assignment** (max `created_at`) is treated as the current/last holder. **Key search** returns the last member who held the key.
 - **"Otišao"** sets `key_returned=true`, `checked_out_at=now()`.
 - **End of day**: keys still open at midnight are surfaced in a next-day report (they stay `key_returned=false`).
 - **Duo**: two independent check-ins (no linkage). **Guided/group**: one check-in per participant; same `trainer_id`.
+- **Void**: `void_checkin(uuid)` RPC (security definer) sets `voided=true`, restores decremented sessions, deletes linked `session_log` / unsettled `reserved_session`, and may revert `first_visit` membership activation. Workers: same business day only; admins: any day.
+- **Create**: `create_checkin(...)` RPC atomically inserts the row, handles trainer session deduction / reserved debt, and activates `first_visit` memberships on first check-in.
 
-### 3.9 `session_log`
+### 3.10 `session_log`
 History of consumed trainer sessions (dates on the card).
 
 ```sql
@@ -385,7 +394,7 @@ create index session_log_checkin_id_idx     on session_log (checkin_id);
 create index session_log_trainer_id_idx     on session_log (trainer_id);
 ```
 
-### 3.10 `reserved_session`
+### 3.11 `reserved_session`
 Owed (reserved) trainer sessions when the member had 0 sessions.
 
 ```sql
@@ -413,7 +422,7 @@ create index reserved_session_unsettled_idx    on reserved_session (member_id) w
 - The system **warns after 3** unsettled rows; archiving a member is **blocked** while unsettled rows exist.
 - Settled at next payment → `settled=true`, links `settled_payment_id`.
 
-### 3.11 `gym_key`
+### 3.12 `gym_key`
 The 22 physical keys (seeded reference data).
 
 ```sql
@@ -428,7 +437,7 @@ select generate_series(1, 22);
 ```
 - Current/last holder is **derived from `checkin`** (latest assignment), not stored here.
 
-### 3.12 `login_attempt`
+### 3.13 `login_attempt`
 Rate-limiting ledger for failed logins. Written/read **only by the service-role client** (the login server action), never by the browser.
 
 ```sql
@@ -587,7 +596,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ## 7. Index summary (hot paths)
 - Member search: `member_name_idx`, `member_phone_idx`, `member_member_no_uidx`, plus trigram GIN (`member_first_name_trgm_idx`, `member_last_name_trgm_idx`) for fuzzy name search (§9).
-- Dashboard (day): `checkin_business_date_idx`, `checkin_open_key_idx`.
+- Dashboard (day): `checkin_business_date_idx`, `checkin_open_key_idx` (partial: open + not voided), `checkin_voided_by_idx`.
 - Takings: `payment_business_date_idx` (partial, excludes voided).
 - Soon-to-expire: `membership_end_date_idx`.
 - One-active-membership guarantee: `membership_one_active_uidx` (partial unique).
@@ -654,10 +663,46 @@ select cron.schedule('auto-close-shifts', '*/10 14-20 * * *',
 
 ## 9. Member search (`pg_trgm`)
 
-The Members page uses fuzzy search over name / surname / member number. Migrations: `20260614150000_member_search`, `20260614151000_harden_member_search`, `20260614152000_member_search_drop_phone`.
+The Members page and dashboard check-in search use fuzzy search over **name / surname / member number** (phone is displayed but not searchable). Migrations: `20260614150000_member_search`, `20260614151000_harden_member_search`, `20260614152000_member_search_drop_phone`, `20260615200000_member_search_no_phone`, `20260615210000_search_members_single_overload`.
 
 - Enables `pg_trgm` (in the `extensions` schema) and adds trigram GIN indexes on `member.first_name`, `member.last_name` (used by `ILIKE`/`similarity`).
 - `search_members(q text, include_archived boolean, lim int, off int)` (`security invoker`, `search_path = public, extensions`) returns paginated member rows enriched with the single active/paused membership summary (`status`, `label`, `end_date`, `sessions_left`, `is_time_based`) plus a `total_count` for pagination.
   - Empty `q` → browse all active (or all when `include_archived`) ordered by `lower(last_name), lower(first_name)`.
-  - Non-empty `q` → name match via `ILIKE` + `similarity` ordering; digit-normalized prefix match on `member_no`. Phone is intentionally not searchable (removed in `20260614152000`).
+  - Non-empty `q` → name match via `ILIKE` + `similarity` ordering; digit-normalized prefix match on `member_no`. **Phone is not searchable.**
 - `EXECUTE` granted to `authenticated`, revoked from `anon`/`public`.
+
+---
+
+## 10. Dashboard RPC functions
+
+Migration `20260615140000_dashboard_support`. All three are **`security definer`** with `set search_path = public`; `EXECUTE` granted to `authenticated` only.
+
+### 10.1 `capture_daily_price(p_training_category_id bigint) → int`
+Returns the standard (non-discount) daily price for a training category: the active `price.amount_rsd` of the **`sessions = 1`** package for that category. Used when creating a **reserved (owed) session** at check-in with 0 sessions left.
+
+### 10.2 `create_checkin(...) → uuid`
+Atomically inserts a `checkin` row and applies side effects:
+
+| Parameter | Notes |
+|---|---|
+| `p_member_id` | Required unless Fitpass |
+| `p_key_no` | Optional for members (all keys taken); **required for Fitpass** |
+| `p_with_trainer` | When true, requires `p_training_category_id` + `p_trainer_id` (trainer-based category) |
+| `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag implies +300 RSD (payment deferred to app) |
+| `p_business_date` | Defaults to `business_today()` |
+
+**Side effects** (when applicable):
+- Trainer session + sessions left > 0 → decrement `membership.sessions_left`, insert `session_log`, set `decremented_session = true`.
+- Trainer session + 0 sessions → insert `reserved_session` with `amount_rsd = capture_daily_price(...)`.
+- `start_mode = 'first_visit'` + first check-in → set `start_date` / `end_date` on membership.
+- Validates: active member, valid key, active trainer, category is trainer-based.
+
+### 10.3 `void_checkin(p_checkin_id uuid) → void`
+Soft-voids a check-in (`voided = true`, audit columns). **Workers**: same business day only; **admins**: any day (via `is_admin()`).
+
+**Reverts**:
+- Restores +1 session if `decremented_session`.
+- Deletes linked `session_log` and unsettled `reserved_session`.
+- May clear `first_visit` activation if this was the member's only non-voided check-in.
+
+Voided rows are excluded from day lists and from `checkin_open_key_idx` (key occupancy).

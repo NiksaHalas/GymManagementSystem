@@ -129,9 +129,13 @@ export interface Checkin {
   trainer_id: string | null;
   decremented_session: boolean;
   is_fitpass: boolean;
+  is_group_fitpass: boolean;
   key_returned: boolean;
   checked_out_at: string | null;
   business_date: string;
+  voided: boolean;
+  voided_at: string | null;
+  voided_by: string | null;
   created_at: string;
   created_by: string | null;
   updated_by: string | null;
