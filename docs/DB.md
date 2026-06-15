@@ -1,12 +1,13 @@
 # DB — Database Schema
 
-Version: 1.2
-Date: 2026-06-14
+Version: 1.3
+Date: 2026-06-15
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
 > v1.1 aligns this doc with the applied migrations in `supabase/migrations/` (UUID defaults, helper functions, the `handle_new_user` trigger, and the implemented RLS policies). Refinement deltas vs. v1.0 are called out inline.
 > v1.2 adds the authentication-system artifacts: the `login_attempt` rate-limit table (§3.12) and the `pg_cron` shift auto-close job (§8). Migrations: `20260614142000_add_login_attempt_table`, `20260614142100_pgcron_shift_autoclose`.
+> v1.3 replaces the `training_type` enum with a runtime-manageable `training_category` lookup table; `membership_type`, `checkin`, `session_log`, and `reserved_session` now reference `training_category_id`. Migration: `20260615120000_training_category_refactor`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -17,7 +18,7 @@ This document defines the database schema for the Gym Management System. It foll
 - **Identifiers**: lowercase `snake_case`; tables are singular nouns.
 - **Timestamps**: `timestamptz` everywhere (UTC). The **business day** is derived in `Europe/Belgrade` and stored as a `date` (`business_date`) on `checkin`/`payment` so day-grouping survives the midnight reset and offline sync.
 - **Primary keys**:
-  - **Reference/config tables** (`staff`, `membership_type`, `price`, `gym_key`): `bigint generated always as identity` (sequential, compact).
+  - **Reference/config tables** (`training_category`, `membership_type`, `price`, `gym_key`): `bigint generated always as identity` (sequential, compact). (`staff` is UUID, 1:1 with `auth.users`.)
   - **Operational tables that can be created offline** (`member`, `membership`, `checkin`, `payment`, `session_log`, `reserved_session`, `shift`): **UUID** primary keys. **Refinement (v1.1):** the server-side column default is **`gen_random_uuid()`** (UUIDv4), because the `pg_uuidv7` extension is **not available on Supabase**. Clients that create rows offline still generate a **client-side UUIDv7** (time-ordered, stable id before sync) and send it as the `id`, so sync stays an idempotent upsert by `id`; only the DB fallback default differs (UUIDv4 instead of v7).
 - **Money**: integer RSD (`amount_rsd int`), no decimals.
 - **Soft delete**: `member.archived` (history preserved). Member numbers are never reused.
@@ -27,7 +28,6 @@ This document defines the database schema for the Gym Management System. It foll
 ### 1.1 Enumerated types
 ```sql
 create type staff_role          as enum ('user', 'admin');
-create type training_type       as enum ('otvoreni', 'kardio', 'individualni', 'duo', 'vodjeni');
 create type membership_status   as enum ('aktivna', 'istekla', 'pauzirana');
 create type membership_start_mode as enum ('payment', 'first_visit');
 create type payment_kind        as enum ('membership', 'debt_settlement', 'fitpass_surcharge');
@@ -52,6 +52,10 @@ erDiagram
     MEMBER ||--o{ SESSION_LOG : "sessions"
     MEMBER ||--o{ RESERVED_SESSION : "owes"
     MEMBERSHIP_TYPE ||--o{ PRICE : "priced_by"
+    TRAINING_CATEGORY ||--o{ MEMBERSHIP_TYPE : "categorizes"
+    TRAINING_CATEGORY ||--o{ CHECKIN : "typed"
+    TRAINING_CATEGORY ||--o{ SESSION_LOG : "typed"
+    TRAINING_CATEGORY ||--o{ RESERVED_SESSION : "typed"
     MEMBERSHIP_TYPE ||--o{ MEMBERSHIP : "defines"
     MEMBERSHIP ||--o{ PAYMENT : "settled_by"
     MEMBERSHIP ||--o{ SESSION_LOG : "consumes"
@@ -178,29 +182,50 @@ create trigger member_assign_no
 ```
 - Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
 
-### 3.4 `membership_type`
-Catalog of training type + package combinations.
+### 3.4 `training_category`
+Runtime-manageable training categories (replaces the former `training_type` enum). Admins can add categories; seeded with the five original types.
+
+```sql
+create table training_category (
+  id               bigint generated always as identity primary key,
+  code             text not null unique,          -- stable slug, e.g. 'otvoreni'
+  label            text not null,                 -- display label (Serbian)
+  is_trainer_based boolean not null default false, -- deducts session + requires trainer at check-in
+  per_trainee      boolean not null default false, -- duo pricing (price per trainee)
+  active           boolean not null default true,
+  sort_order       int not null default 0,
+  updated_by       uuid references staff (id),
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+```
+
+Seeded rows: `otvoreni`/`kardio` (self-guided); `individualni`/`duo`/`vodjeni` (trainer-based); `duo` also has `per_trainee = true`.
+
+### 3.5 `membership_type`
+Catalog of training category + package combinations.
 
 ```sql
 create table membership_type (
-  id            bigint generated always as identity primary key,
-  training_type training_type not null,
-  package       text not null,          -- '1/1','8/1','10/1','12/1','16/1','30/1'
-  label         text not null,          -- display label (Serbian)
-  is_time_based boolean not null,       -- true => unlimited visits within duration
-  sessions      int,                    -- session count for session-based; null for time-based
-  duration_days int not null default 30,
-  active        boolean not null default true,
-  created_at    timestamptz not null default now(),
-  unique (training_type, package)
+  id                   bigint generated always as identity primary key,
+  training_category_id bigint not null references training_category (id) on delete restrict,
+  package              text not null,          -- '1/1','8/1','10/1','12/1','16/1','30/1'
+  label                text not null,          -- display label (Serbian)
+  is_time_based        boolean not null,       -- true => unlimited visits within duration
+  sessions             int,                    -- session count for session-based; null for time-based
+  duration_days        int not null default 30,
+  active               boolean not null default true,
+  created_at           timestamptz not null default now(),
+  unique (training_category_id, package)
 );
 
+create index membership_type_training_category_id_idx on membership_type (training_category_id);
 create index membership_type_active_idx on membership_type (active) where active;
 ```
 - `is_time_based = true`: Open type 30/1, Cardio 30/1, Open type discount 30/1.
 - `is_time_based = false` (session-based, 30-day validity): all individual/duo/guided packages, daily 1/1, Open type 8/1 & 12/1.
 
-### 3.5 `price`
+### 3.6 `price`
 Current price per membership type (no history in v1). A type may have a standard and a discount price.
 
 ```sql
@@ -219,7 +244,7 @@ create index price_membership_type_id_idx on price (membership_type_id);
 create index price_updated_by_idx          on price (updated_by);
 ```
 
-### 3.6 `membership`
+### 3.7 `membership`
 A member's membership period. One active/paused at a time.
 
 ```sql
@@ -306,9 +331,9 @@ create table checkin (
   staff_id            uuid not null references staff (id) on delete restrict,
   membership_id       uuid references membership (id) on delete set null,
   key_no              int references gym_key (key_no),                    -- nullable: allowed when all keys taken
-  with_trainer        boolean not null default false,
-  training_type       training_type,                                      -- set when with_trainer
-  trainer_id          uuid references staff (id),                         -- set when with_trainer
+  with_trainer          boolean not null default false,
+  training_category_id  bigint references training_category (id),         -- set when with_trainer
+  trainer_id            uuid references staff (id),                         -- set when with_trainer
   decremented_session boolean not null default false,
   is_fitpass          boolean not null default false,
   key_returned        boolean not null default false,                     -- "otišao" sets true
@@ -318,7 +343,7 @@ create table checkin (
   created_by          uuid references staff (id),
   updated_by          uuid references staff (id),
   updated_at          timestamptz not null default now(),
-  check (not with_trainer or (training_type is not null and trainer_id is not null)),
+  check (not with_trainer or (training_category_id is not null and trainer_id is not null)),
   check (is_fitpass or member_id is not null),                            -- member required unless Fitpass
   check (not is_fitpass or key_no is not null)                            -- Fitpass requires a key
 );
@@ -349,7 +374,7 @@ create table session_log (
   membership_id uuid references membership (id) on delete set null,
   checkin_id    uuid references checkin (id) on delete set null,
   trainer_id    uuid references staff (id),
-  training_type training_type not null,
+  training_category_id bigint not null references training_category (id),
   session_date  date not null,
   created_at    timestamptz not null default now()
 );
@@ -368,7 +393,7 @@ create table reserved_session (
   id                  uuid primary key default gen_random_uuid(),
   member_id           uuid not null references member (id) on delete restrict,
   checkin_id          uuid references checkin (id) on delete set null,
-  training_type       training_type not null,
+  training_category_id bigint not null references training_category (id),
   session_date        date not null,
   amount_rsd          int not null check (amount_rsd > 0),  -- daily price CAPTURED at incur time
   settled             boolean not null default false,
@@ -429,8 +454,17 @@ alter table login_attempt force row level security;
 
 ## 4. Seed data
 
-### 4.1 Membership types
-| training_type | package | is_time_based | sessions | label |
+### 4.1 Training categories (seed)
+| code | label | is_trainer_based | per_trainee |
+|---|---|---|---|
+| otvoreni | Otvoreni tip | false | false |
+| kardio | Kardio | false | false |
+| individualni | Individualni | true | false |
+| duo | Duo | true | true |
+| vodjeni | Vođeni | true | false |
+
+### 4.2 Membership types
+| category (code) | package | is_time_based | sessions | label |
 |---|---|---|---|---|
 | individualni | 1/1 | false | 1 | Individualni 1/1 (dnevna) |
 | individualni | 8/1 | false | 8 | Individualni 8/1 |
@@ -451,7 +485,7 @@ alter table login_attempt force row level security;
 | otvoreni | 30/1 | true | null | Otvoreni tip 30/1 (mesečna) |
 | kardio | 30/1 | true | null | Kardio 30/1 (mesečna) |
 
-### 4.2 Prices (RSD)
+### 4.3 Prices (RSD)
 | type / package | standard | discount (Open type only) |
 |---|---|---|
 | individualni 1/1 | 1,200 | — |
@@ -506,14 +540,15 @@ Policy intent (per `PRD.md` §2):
 | Table | User (front desk) | Admin |
 |---|---|---|
 | `member` | select/insert/update (any member, anytime) | full |
-| `membership`, `price` read | read | read |
-| `price` write | — | full |
+| `membership_type`, `training_category` | read | read |
+| `membership_type`, `training_category`, `price` write | — | full |
 | `checkin`, `payment` insert | yes | yes |
 | `checkin`, `payment` update/void | **only where `business_date = today`** (Europe/Belgrade) | any day |
 | `payment` monthly/yearly aggregates | **today-and-back daily only** | full |
 | `shift` | no read | read |
 | `staff` (accounts) | read self | full (create/disable/reset) |
 | `membership_type` | read | full |
+| `training_category` | read | full |
 
 ### 5.1 Implemented policies
 All policies target the `authenticated` role (`anon` has no table grants):
@@ -525,6 +560,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `member` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
 | `membership` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
 | `membership_type` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
+| `training_category` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `price` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `gym_key` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `payment` | `true` | `staff_id = auth.uid()` | `is_admin() or business_date = business_today()` (both) | `is_admin()` |

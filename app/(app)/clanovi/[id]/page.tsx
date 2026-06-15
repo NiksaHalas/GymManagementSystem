@@ -27,7 +27,6 @@ import {
   formatDate,
   formatRsd,
 } from "@/lib/members/format";
-import type { TrainingType } from "@/lib/db/types";
 import { DiscountToggle, CommentEditor } from "./quick-edits";
 import { EditMemberDialog } from "./edit-member-dialog";
 import { ArchiveControls } from "./archive-controls";
@@ -40,14 +39,6 @@ const STATUS_VARIANT: Record<
   expired: "destructive",
   paused: "secondary",
   none: "outline",
-};
-
-const TRAINING_LABEL: Record<TrainingType, string> = {
-  otvoreni: "Otvoreni tip",
-  kardio: "Kardio",
-  individualni: "Individualni",
-  duo: "Duo",
-  vodjeni: "Vođeni",
 };
 
 const RESERVED_WARN_THRESHOLD = 3;
@@ -92,7 +83,7 @@ export default async function MemberCardPage({
     supabase
       .from("membership")
       .select(
-        "*, membership_type(label, training_type, package, is_time_based)",
+        "*, membership_type(label, package, is_time_based, training_category(label))",
       )
       .eq("member_id", id)
       .in("status", ["aktivna", "pauzirana"])
@@ -106,20 +97,20 @@ export default async function MemberCardPage({
       .limit(100),
     supabase
       .from("session_log")
-      .select("id, training_type, session_date, trainer:staff(username)")
+      .select("id, session_date, trainer:staff(username), training_category(label)")
       .eq("member_id", id)
       .order("session_date", { ascending: false })
       .limit(100),
     supabase
       .from("reserved_session")
-      .select("id, training_type, session_date, amount_rsd, settled, settled_at")
+      .select("id, session_date, amount_rsd, settled, settled_at, training_category(label)")
       .eq("member_id", id)
       .order("session_date", { ascending: false }),
   ]);
 
   const currentMembership = membershipRes.data?.[0] ?? null;
   const membershipType = (currentMembership?.membership_type ?? null) as unknown as
-    | { label: string; training_type: TrainingType; package: string; is_time_based: boolean }
+    | { label: string; package: string; is_time_based: boolean; training_category: { label: string } | null }
     | null;
   const payments = paymentsRes.data ?? [];
   const sessions = sessionsRes.data ?? [];
@@ -269,7 +260,9 @@ export default async function MemberCardPage({
                 {reserved.map((r) => (
                   <TableRow key={r.id}>
                     <TableCell>{formatDate(r.session_date)}</TableCell>
-                    <TableCell>{TRAINING_LABEL[r.training_type as TrainingType]}</TableCell>
+                    <TableCell>
+                      {(r.training_category as unknown as { label: string } | null)?.label ?? "—"}
+                    </TableCell>
                     <TableCell>{formatRsd(r.amount_rsd)}</TableCell>
                     <TableCell>
                       <Badge variant={r.settled ? "outline" : "destructive"}>
@@ -361,7 +354,9 @@ export default async function MemberCardPage({
                   return (
                     <TableRow key={s.id}>
                       <TableCell>{formatDate(s.session_date)}</TableCell>
-                      <TableCell>{TRAINING_LABEL[s.training_type as TrainingType]}</TableCell>
+                      <TableCell>
+                        {(s.training_category as unknown as { label: string } | null)?.label ?? "—"}
+                      </TableCell>
                       <TableCell>{trainer?.username ?? "—"}</TableCell>
                     </TableRow>
                   );

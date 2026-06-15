@@ -1,10 +1,4 @@
 export type StaffRole = "user" | "admin";
-export type TrainingType =
-  | "otvoreni"
-  | "kardio"
-  | "individualni"
-  | "duo"
-  | "vodjeni";
 export type MembershipStatus = "aktivna" | "istekla" | "pauzirana";
 export type MembershipStartMode = "payment" | "first_visit";
 export type PaymentKind =
@@ -48,9 +42,22 @@ export interface Member {
   updated_at: string;
 }
 
+export interface TrainingCategory {
+  id: number;
+  code: string;
+  label: string;
+  is_trainer_based: boolean;
+  per_trainee: boolean;
+  active: boolean;
+  sort_order: number;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MembershipType {
   id: number;
-  training_type: TrainingType;
+  training_category_id: number;
   package: string;
   label: string;
   is_time_based: boolean;
@@ -118,7 +125,7 @@ export interface Checkin {
   membership_id: string | null;
   key_no: number | null;
   with_trainer: boolean;
-  training_type: TrainingType | null;
+  training_category_id: number | null;
   trainer_id: string | null;
   decremented_session: boolean;
   is_fitpass: boolean;
@@ -137,7 +144,7 @@ export interface SessionLog {
   membership_id: string | null;
   checkin_id: string | null;
   trainer_id: string | null;
-  training_type: TrainingType;
+  training_category_id: number;
   session_date: string;
   created_at: string;
 }
@@ -146,7 +153,7 @@ export interface ReservedSession {
   id: string;
   member_id: string;
   checkin_id: string | null;
-  training_type: TrainingType;
+  training_category_id: number;
   session_date: string;
   amount_rsd: number;
   settled: boolean;
@@ -167,6 +174,7 @@ export type Database = {
       staff: { Row: Staff; Insert: Omit<Staff, "created_at" | "updated_at">; Update: Partial<Staff> };
       shift: { Row: Shift; Insert: Omit<Shift, "created_at" | "id">; Update: Partial<Shift> };
       member: { Row: Member; Insert: Omit<Member, "created_at" | "updated_at" | "id">; Update: Partial<Member> };
+      training_category: { Row: TrainingCategory; Insert: Omit<TrainingCategory, "id" | "created_at" | "updated_at">; Update: Partial<TrainingCategory> };
       membership_type: { Row: MembershipType; Insert: Omit<MembershipType, "id" | "created_at">; Update: Partial<MembershipType> };
       price: { Row: Price; Insert: Omit<Price, "id" | "updated_at">; Update: Partial<Price> };
       membership: { Row: Membership; Insert: Omit<Membership, "created_at" | "updated_at" | "id">; Update: Partial<Membership> };

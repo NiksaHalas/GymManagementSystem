@@ -112,7 +112,8 @@ app/
     dashboard/                  # daily check-in
     clanovi/                    # members list + search + create dialog (implemented)
       [id]/                     # virtual card: status, quick edits, membership, history, archive (implemented)
-    cene/                       # membership prices
+    cene/                       # membership prices (implemented: tabbed catalog, inline price edit)
+      actions.ts, cene-client.tsx, price-cell.tsx, add-type-dialog.tsx
     pazar/                      # daily/monthly/yearly takings
     smene/                      # shifts (admin)
     nalozi/                     # accounts (admin) + counter-device toggle (implemented)
@@ -127,6 +128,7 @@ lib/
   auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
   shifts/                       # shift lifecycle server actions (implemented)
   members/                      # member zod schema, status derivation, types, formatting (implemented)
+  catalog/                      # membership catalog view-models, zod schemas, package formatting (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
   offline/                      # IndexedDB queue + sync engine
   time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts)
@@ -139,6 +141,14 @@ scripts/
   seed-admins.mjs               # one-time admin seed (implemented)
   backup-usb.mjs                # companion backup script
 ```
+
+### 2.2 Training categories (`training_category`)
+The former `training_type` Postgres enum is replaced by a **`training_category` lookup table** so Admins can add categories at runtime (`DB.md` §3.4, migration `20260615120000_training_category_refactor`). Each row carries:
+- **`is_trainer_based`**: when true, check-in with a trainer deducts a session and requires a trainer selection.
+- **`per_trainee`**: duo-style pricing (amount charged per trainee).
+- **`active` + `sort_order`**: soft-deactivate hides from workers; tab order on `/cene`.
+
+`membership_type` references `training_category_id` (unique per `(category, package)`). Billing model (time-based vs session-based) stays on `membership_type.is_time_based`. Discount prices remain tied to the `otvoreni` category code.
 
 ---
 
@@ -225,12 +235,12 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Daily check-in dashboard | Server Component for the day's list + Client check-in form; `command`/`popover` for fast member search (name/surname/member_no/phone) |
 | Key occupancy (22) | Derived from today's open check-ins; "otišao" sets `key_returned`; shared keys = latest assignment wins |
 | Membership status badges | Computed from `memberships` (active/expired/paused/none); red "istekla članarina" marker |
-| Trainer session + session deduction | Check-in writes `with_trainer`, `training_type`, `trainer_id`; transaction decrements `sessions_left` and inserts a `session_logs` row |
+| Trainer session + session deduction | Check-in writes `with_trainer`, `training_category_id`, `trainer_id`; transaction decrements `sessions_left` and inserts a `session_log` row |
 | Reserved (owed) session | Insert `reserved_sessions` with the **captured daily price**; warn after 3; settle at next payment |
 | Payments / custom price / discount | Payment dialog with confirmation for custom price (< standard, > 0) + optional reason; auto reduced price list for discount-flagged members on Open type |
 | Takings ("pazar") | Aggregations by business date; net of voided payments; monthly/yearly views gated to Admin via RLS |
 | Payment void + membership revert | Transaction marks payment voided and reverts the linked membership change |
-| Prices admin | CRUD on `prices`/`membership_types`, Admin-only |
+| Prices admin | **(implemented)** `(app)/cene`: tabbed by `training_category`, inline price edit (Admin), add/deactivate types & categories; read-only for workers. Server actions in `cene/actions.ts`; view-models in `lib/catalog/` |
 | Shifts | See §5 |
 | Soon-to-expire (≤3 days) | Query memberships with `end_date <= today + 3` |
 | Reports export (Admin) | Route handler streams CSV/JSON of the selected report |
@@ -284,7 +294,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer, "U pripremi" placeholder pages for `clanovi`/`cene`/`pazar`).
-- **Phase 1 — Core (MVP)**: **members CRUD + card + search implemented** (`(app)/clanovi` list with fuzzy `search_members` RPC + pagination, create/edit dialogs with duplicate-phone warning, virtual-card page with membership/payment/session/reserved-session history, discount toggle, comment editor, archive/restore; member-search migrations + `pg_trgm` per `DB.md` §9). **Remaining:** membership types/prices; dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
+- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer, "U pripremi" placeholder pages for `pazar`).
+- **Phase 1 — Core (MVP)**: **members CRUD + card + search implemented** (`(app)/clanovi` …). **Membership prices implemented** (`(app)/cene` with `training_category` lookup refactor per `DB.md` §3.4). **Remaining:** dashboard check-in + keys + day navigation; cash payment + custom price + discount list + daily takings.
 - **Phase 2 — Advanced**: trainer sessions + session deduction + card history; reserved/owed sessions + settlement; pause/resume; Fitpass + surcharge; key search; shifts + Admin views; monthly/yearly takings; soon-to-expire list; Admin export.
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

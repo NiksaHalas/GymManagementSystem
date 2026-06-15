@@ -1,7 +1,7 @@
 # PRD — Gym Management System
 
-Version: 1.1
-Date: 2026-06-11
+Version: 1.2
+Date: 2026-06-15
 Status: Approved for development
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
@@ -150,8 +150,10 @@ Rules:
 - For a **group session via Fitpass** there is a **+300 RSD surcharge**, recorded as a payment that day and **included in the daily total**.
 
 ### 3.9 Membership prices (page)
-- Overview page: **select a membership type → see all prices for that type**.
-- **Admin can edit prices** in-app; updated prices are used immediately at payment. (No history of old prices is kept in v1.)
+- Overview page: **tabbed by training category** (Otvoreni tip, Kardio, Individualni, Duo, Vođeni, plus any Admin-added categories); each tab lists all packages with standard (and, for Open type, discount) prices.
+- **Workers**: read-only view of active categories, types, and prices.
+- **Admin**: inline price editing (click-to-edit, saved immediately); add new membership types and training categories; soft-deactivate/reactivate types and categories (deactivated items are hidden from workers, greyed for Admins). Discount prices remain **Open type only**.
+- Updated prices are used immediately at payment. (No history of old prices is kept in v1.)
 
 ### 3.10 Daily payments / Takings ("Pazar")
 - Page listing all payments for the selected day with the **total at the bottom**.
@@ -300,3 +302,4 @@ Rules:
 - Notifications visual only; "soon to expire" threshold 3 days.
 - Backup: automatic USB 3× daily + cloud copy.
 - Phone required; family sharing allowed with a duplicate warning (not a hard unique rule).
+- Membership prices page: Admin manages categories, types, and prices (soft-deactivate, no hard delete); workers read-only; discount prices Open-type-only.
