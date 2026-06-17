@@ -12,6 +12,14 @@ export async function requestPasswordResetAction(
 ): Promise<void> {
   const username = normalizeUsername(rawUsername);
   if (!username) return;
-  // Fire-and-forget: errors are swallowed to prevent enumeration
-  await sendPasswordResetEmail(username).catch(() => {});
+  try {
+    await sendPasswordResetEmail(username);
+  } catch (err) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn(
+        "[password-reset:dev] unhandled error in requestPasswordResetAction",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }

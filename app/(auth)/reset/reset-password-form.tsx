@@ -38,10 +38,8 @@ export function ResetPasswordForm() {
   const [done, setDone] = React.useState(false);
 
   /**
-   * Supabase sends the recovery token as a URL fragment (#access_token=...).
-   * When redirectTo lands on this page, @supabase/ssr automatically exchanges
-   * the PKCE code in the URL and sets the session cookie.
-   * We just need to call updateUser() with the new password.
+   * Recovery session is established by app/auth/callback/route.ts (verifyOtp on token_hash)
+   * before this page loads. We call updateUser() with the new password.
    */
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -57,7 +55,7 @@ export function ResetPasswordForm() {
     if (error) {
       form.setError("root", {
         message:
-          "Greška pri promeni lozinke. Link je možda istekao. Zatražite novi.",
+          "Link za reset lozinke je istekao ili je nevažeć. Zatražite novi link ispod.",
       });
       return;
     }
@@ -123,8 +121,14 @@ export function ResetPasswordForm() {
         />
 
         {form.formState.errors.root && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {form.formState.errors.root.message}
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive space-y-2">
+            <p>{form.formState.errors.root.message}</p>
+            <Link
+              href="/zaboravljena-lozinka"
+              className="text-primary underline-offset-4 hover:underline block"
+            >
+              Zatraži novi link za reset
+            </Link>
           </div>
         )}
 

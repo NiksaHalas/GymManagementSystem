@@ -6,6 +6,37 @@ import { usernameToEmail } from "@/lib/auth/username";
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
+const DEV = process.env.NODE_ENV === "development";
+
+/** Dev-only diagnostics — never exposed to the client (anti-enumeration). */
+function devLog(message: string, detail?: Record<string, unknown>): void {
+  if (!DEV) return;
+  if (detail) {
+    console.warn(`[password-reset:dev] ${message}`, detail);
+  } else {
+    console.warn(`[password-reset:dev] ${message}`);
+  }
+}
+
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "(invalid)";
+  return `${email[0]}***${email.slice(at)}`;
+}
+
+function logEnvSanityOnce(): void {
+  if (!DEV) return;
+  devLog("env check", {
+    RESEND_API_KEY: process.env.RESEND_API_KEY ? "set" : "MISSING",
+    RESEND_FROM_EMAIL:
+      process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev (default)",
+    NEXT_PUBLIC_SITE_URL: SITE_URL,
+    resetLinkFormat: `${SITE_URL}/auth/callback?token_hash=...&type=recovery&next=/reset`,
+  });
+}
+
+let envLogged = false;
+
 /**
  * Request a password reset for a given username.
  * - Looks up the staff row to get the recovery_email.
@@ -13,40 +44,101 @@ const SITE_URL =
  * - Emails the link to the recovery_email via Resend.
  *
  * On any error or missing data we return success anyway (no user enumeration).
+ * In development, reasons are logged server-side only.
  */
 export async function sendPasswordResetEmail(username: string): Promise<void> {
+  if (!envLogged) {
+    logEnvSanityOnce();
+    envLogged = true;
+  }
+
+  if (!process.env.RESEND_API_KEY) {
+    devLog("skip: RESEND_API_KEY is not set in .env.local");
+    return;
+  }
+
   const admin = createAdminClient();
 
-  // Find the staff record for this username
-  const { data: staff } = await admin
+  const { data: staff, error: staffError } = await admin
     .from("staff")
     .select("id, recovery_email, active")
     .eq("username", username)
-    .single();
+    .maybeSingle();
 
-  // Silently exit: unknown username, no recovery email, or disabled account
-  if (!staff || !staff.recovery_email || !staff.active) return;
+  if (staffError) {
+    devLog("skip: staff lookup failed", { message: staffError.message });
+    return;
+  }
+
+  if (!staff) {
+    devLog("skip: unknown username (no staff row)", { username });
+    return;
+  }
+
+  if (!staff.recovery_email) {
+    devLog("skip: no recovery_email on staff row — set it in Nalozi", {
+      username,
+    });
+    return;
+  }
+
+  if (!staff.active) {
+    devLog("skip: account disabled", { username });
+    return;
+  }
 
   const email = usernameToEmail(username);
+  const redirectTo = `${SITE_URL}/auth/callback?next=/reset`;
 
-  // Generate a recovery link (1h TTL = Supabase default OTP expiry)
-  const { data: linkData, error } = await admin.auth.admin.generateLink({
-    type: "recovery",
-    email,
-    options: {
-      redirectTo: `${SITE_URL}/reset`,
+  const { data: linkData, error: linkError } = await admin.auth.admin.generateLink(
+    {
+      type: "recovery",
+      email,
+      options: { redirectTo },
     },
-  });
+  );
 
-  if (error || !linkData?.properties?.action_link) return;
+  if (linkError) {
+    devLog("skip: generateLink failed", {
+      message: linkError.message,
+      redirectTo,
+      hint: "Add redirect URL in Supabase Auth → URL Configuration",
+    });
+    return;
+  }
 
-  const resetLink = linkData.properties.action_link;
+  const tokenHash = linkData?.properties?.hashed_token;
+  if (!tokenHash) {
+    devLog("skip: generateLink returned no hashed_token", { redirectTo });
+    return;
+  }
 
-  await sendEmail({
-    to: staff.recovery_email,
-    subject: "Resetovanje lozinke — Teretana",
-    html: buildResetEmailHtml(username, resetLink),
-  });
+  const resetLink = `${SITE_URL}/auth/callback?token_hash=${encodeURIComponent(tokenHash)}&type=recovery&next=/reset`;
+  const to = staff.recovery_email;
+
+  try {
+    const result = await sendEmail({
+      to,
+      subject: "Resetovanje lozinke — Teretana",
+      html: buildResetEmailHtml(username, resetLink),
+    });
+    devLog("sent via Resend", {
+      to: maskEmail(to),
+      id: result?.id,
+      from: process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev",
+      hint:
+        process.env.RESEND_FROM_EMAIL?.includes("resend.dev") ||
+        !process.env.RESEND_FROM_EMAIL
+          ? "onboarding@resend.dev only delivers to your Resend account email"
+          : undefined,
+    });
+  } catch (err) {
+    devLog("Resend send failed", {
+      to: maskEmail(to),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 }
 
 function buildResetEmailHtml(username: string, resetLink: string): string {

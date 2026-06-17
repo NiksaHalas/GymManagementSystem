@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.3
+Version: 1.5
 Date: 2026-06-17
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -9,6 +9,8 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.1 records the implemented **Members ("Članovi")** feature (list + fuzzy search + virtual card + create/edit/archive) under `(app)/clanovi`, the supporting `lib/members/` and `lib/time/` helpers, and the member-search migrations (mirrored in `DB.md` §9). See §2.1, §7, and §12.
 > v1.2 records the implemented **Dashboard (daily check-in)** under `(app)/dashboard`, `lib/dashboard/`, Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10), the `training_category` refactor on `/cene`, session/auth deduplication (`lib/supabase/server-client.ts`, `React.cache()` + `getUser()` in server components), migration `20260615140000_dashboard_support` (applied remotely as `dashboard_support`), and member-search cleanup migrations `20260615200000` / `20260615210000` (no phone; single RPC overload).
 > v1.3 records the implemented **Pazar / payment MVP**: `(app)/pazar`, `lib/pazar/`, shared `components/payment/payment-dialog.tsx`, Postgres RPCs `record_payment` / `void_payment` / `promote_memberships` (`DB.md` §8.2, §11), group Fitpass +300 in `create_checkin`, payment entry points on dashboard + member card, Admin CSV export (`/api/admin/pazar/export`). Migrations `20260617100000`–`20260617100400`.
+> v1.4 records **Phase 0 auth/shift hardening**: shift lifecycle via Postgres RPCs `ensure_open_shift()` / `end_shift()` (`DB.md` §12); counter hard-fail guards in `lib/shifts/actions.ts`; password reset SSR callback (`app/auth/callback/route.ts` — `verifyOtp` + `token_hash`, not implicit `action_link`); middleware `GUEST_ONLY` vs public auth paths; `login_attempt` pg_cron cleanup (`DB.md` §8.3). Migrations `20260617100500`, `20260617100600`.
+> v1.5 records **Phase 0 shift attribution (fail-open)**: `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; `shift_id` + waive on `checkin`/`payment`; counter banner + admin reconcile (`?unassigned=1`); deploy runbook `npm run auth:push-config`. Migration `20260617100700_shift_attribution`.
 
 ---
 
@@ -111,6 +113,8 @@ app/
     login/                      # login page + form + signIn action
     zaboravljena-lozinka/       # forgot password (request reset by username)
     reset/                      # set new password (consumes recovery link)
+  auth/
+    callback/route.ts           # SSR auth callback (PKCE code + token_hash recovery)
   (app)/
     layout.tsx                  # authenticated shell + sidebar (implemented)
     dashboard/                  # daily check-in (implemented)
@@ -161,6 +165,7 @@ supabase/
   migrations/                   # SQL migrations (see DB.md)
 scripts/
   seed-admins.mjs               # one-time admin seed (implemented)
+  push-supabase-auth-config.mjs # optional: push Auth redirect URLs via Management API (needs SUPABASE_ACCESS_TOKEN)
   backup-usb.mjs                # companion backup script (planned, Phase 3)
 ```
 
@@ -236,15 +241,21 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 
 ### 3.2 Password reset (Resend)
 - Each `staff` record has a **recovery email** (set by an Admin).
-- Reset flow (`lib/auth/password-reset.ts`): self-service from the `/zaboravljena-lozinka` page (enter username) or Admin-initiated from the Accounts page. The **service-role admin client** calls `auth.admin.generateLink({ type: 'recovery' })` with `redirectTo = <site>/reset`, and the link is emailed to the `recovery_email` via the existing `sendEmail()` helper (`utils/resend/send.ts`). Links are valid **1 hour** (Supabase default OTP expiry).
+- Reset flow (`lib/auth/password-reset.ts`): self-service from the `/zaboravljena-lozinka` page (enter username) or Admin-initiated from the Accounts page. The **service-role admin client** calls `auth.admin.generateLink({ type: 'recovery' })`; the email contains an SSR-friendly link built from `hashed_token` (`<site>/auth/callback?token_hash=...&type=recovery&next=/reset`). **`app/auth/callback/route.ts`** calls `verifyOtp({ token_hash, type: 'recovery' })` (or `exchangeCodeForSession` for PKCE `code`) to set the session cookie, then redirects to `/reset`. The link is emailed to the `recovery_email` via `sendEmail()`. Links are valid **1 hour** (Supabase Auth OTP expiry — confirm **3600s** in Supabase Dashboard → Auth → Email).
+- **Why not `action_link`:** Supabase's verify redirect (used by `action_link`) returns the session in the URL **hash fragment** (`#access_token=...`), which the server never receives. That caused the old flow to land on `/login?error=auth`. The fix builds the reset URL locally from `generateLink().properties.hashed_token` so the callback can call `verifyOtp` server-side and write httpOnly cookies.
 - The `/reset` page consumes the recovery session and calls `supabase.auth.updateUser({ password })` (min 8 chars).
 - Self-service responses never reveal whether a username exists (no user enumeration).
 - Requires `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `NEXT_PUBLIC_SITE_URL` to be configured (see §10).
+- **Dev diagnostics** (server-only, `NODE_ENV=development`): `[password-reset:dev]` in `lib/auth/password-reset.ts`, `[auth/callback:dev]` in the callback route.
 
 ### 3.3 Roles
 - Two roles: `user` and `admin`, stored on the `staff` row.
 - **Database-level**: Postgres **RLS** policies enforce access (e.g. only Admins can read monthly/yearly aggregates, manage accounts, or edit past-day logs). RLS reads the caller's role via a helper that joins `auth.uid()` to `staff.role`.
-- **App-level**: the root `middleware.ts` redirects unauthenticated requests to `/login` (and authenticated users away from the auth pages); `requireUser()` / `requireAdmin()` (`lib/auth/session.ts`) guard the `(app)` shell and Admin-only segments (`/nalozi`, `/smene`). This is a UX layer on top of (never instead of) RLS.
+- **App-level**: the root `middleware.ts` redirects unauthenticated requests to `/login`; `requireUser()` / `requireAdmin()` (`lib/auth/session.ts`) guard the `(app)` shell and Admin-only segments (`/nalozi`, `/smene`). This is a UX layer on top of (never instead of) RLS.
+- **Public vs guest-only auth paths** (`middleware.ts`):
+  - **`PUBLIC_PATHS`** — `/login`, `/zaboravljena-lozinka`, `/reset`, `/auth/callback`: reachable without a session.
+  - **`GUEST_ONLY_AUTH_PATHS`** — `/login`, `/zaboravljena-lozinka` only: authenticated users are redirected to `/`.
+  - **`/reset`** and **`/auth/callback`** stay accessible during password recovery (a recovery session must not be redirected away before the new password is set).
 - **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes `username`/`role`/`recovery_email` as metadata so the `handle_new_user` trigger links the `staff` row.
 
 ### 3.4 Counter device vs. remote (view-only) — device binding
@@ -275,13 +286,16 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 
 ## 5. Shifts from auth sessions
 
-- A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/actions.ts`.
-- **Open a shift** automatically when a worker logs in on the counter device (the `(app)` layout calls `ensureOpenShift()`): if no shift is open it opens one; if a *different* worker's shift is open it treats login as a handover (closes old as `switch`, opens new); if the *same* worker already has one open it is reused (idempotent).
-- **End shift (manual)**: a worker explicitly ends their shift (`ended_reason = 'logout'`) and **stays signed in**.
-- **Sign-out ≠ end shift**: plain logout only clears the auth session and **leaves the shift open** (per product decision); the shift then ends via manual end, handover, or the auto-close safety net.
-- **Handover ("switch worker")**: a server action re-authenticates the incoming worker by **username + password**, closes the current shift (`ended_reason = 'switch'`) and opens a new one — without tearing down app state. Fits the daily 09:00–15:00 / 15:00–21:00 rotation.
-- **Safety net**: the Supabase **`pg_cron`** job `auto_close_shifts()` closes shifts still open past the gym's closing time + 20 min (`ended_reason = 'auto_close'`), stamping `ended_at` to the actual closing time **without** touching auth sessions. Closing times (Europe/Belgrade): **Mon–Fri 21:00, Sat 18:00, Sun 16:00**. See `DB.md` §8.
-- **Admin remote view-only** logins are non-counter sessions (no `gym_counter` cookie) and **do not create** a shift (see §3.4).
+- A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/` and delegates mutations to Postgres RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, and **`end_shift()`** (`DB.md` §12; migration `20260617100700_shift_attribution`). **`ensure_open_shift()` is removed** — no auto-handover on login.
+- **Atribucija:** `checkin` and `payment` rows store `staff_id = auth.uid()` always; nullable `shift_id` (assigned when caller has an open shift); `waived_at` / `waived_by` for admin-resolved gaps. Pending badge: `shift_id IS NULL AND waived_at IS NULL AND created_at >= SHIFT_ATTRIBUTION_LAUNCH_AT` (default = migration launch; see `lib/shifts/config.ts`).
+- **Counter layout (fail-open):** `(app)/layout` calls `openOrResumeShift()` with transient retry. Returns `opened`/`resumed` → OK; `foreign_shift_open` → `ShiftAttributionBanner` + CTA **Preuzmi smenu** (`handover_shift()`); permanent errors also show banner. Check-in/payment still work with `shift_id NULL`.
+- **Open / resume:** `open_or_resume_shift()` (**INVOKER**) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally.
+- **Handover:** `handoverShiftAction()` / `switchWorkerAction()` call **`handover_shift()`** (**DEFINER**, `FOR UPDATE`) — atomic close (`switch`) + open. Switch worker still requires password sign-in first.
+- **End shift (manual):** `endShiftAction()` → INVOKER `end_shift()` (`ended_reason = 'logout'`); worker **stays signed in**.
+- **Sign-out ≠ end shift:** plain logout only clears the auth session.
+- **Admin reconcile:** badge in sidebar/header; `/dashboard?unassigned=1` and `/pazar?unassigned=1` with assign/waive actions (`lib/shifts/reconcile-actions.ts`).
+- **Counter guard:** `isCounterDevice()` — remote admin sessions skip shift RPCs and banner.
+- **Safety net:** `pg_cron` `auto_close_shifts()` — see `DB.md` §8.
 
 ---
 
@@ -351,6 +365,24 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 - **Cron**: shift auto-close and membership promotion via Supabase `pg_cron` (`auto_close_shifts`, `promote_memberships`); optional Vercel Cron for app-level tasks.
 - Migrations applied through the Supabase CLI; types regenerated after each migration.
 
+### Deploy runbook (manual — no CI yet)
+
+1. Apply pending SQL migrations: `supabase db push` (or MCP `apply_migration` per file).
+2. Regenerate types: `supabase gen types typescript --local > lib/db/types.ts` (or remote equivalent).
+3. Set production env on Vercel: `NEXT_PUBLIC_*`, `SUPABASE_SERVICE_ROLE_KEY`, `COUNTER_DEVICE_SECRET`, `RESEND_*`, optional `SHIFT_ATTRIBUTION_LAUNCH_AT`.
+4. **Auth config push** (redirect URLs + OTP 3600 s): export `SUPABASE_ACCESS_TOKEN` (Dashboard → Access Tokens or `supabase login`) and ensure `NEXT_PUBLIC_SITE_URL` matches production, then run **`npm run auth:push-config`** from the repo root before or after deploy.
+5. Smoke-test: login, password reset (`/auth/callback` → `/reset`), counter shift open/foreign/takeover, switch worker, admin reconcile badge.
+
+#### Smoke test checklist (Phase 0 shift attribution)
+
+- [ ] Login / logout; disabled account redirect
+- [ ] Password reset: valid link → `/reset`; expired recovery → `/login?error=expired` with toast + link to `/zaboravljena-lozinka`
+- [ ] Counter: `open_or_resume_shift` opens shift; second worker sees banner, check-in still works (`shift_id` null)
+- [ ] **Preuzmi smenu** / switch worker → `handover_shift` only; banner clears
+- [ ] Admin remote: no banner, no shift RPC; badge on dashboard/pazar when pending
+- [ ] `/dashboard?unassigned=1` and `/pazar?unassigned=1`: assign shift + waive
+- [ ] `npm run auth:push-config` with token (OTP 3600 + redirect URLs)
+
 ---
 
 ## 10. Environment variables
@@ -363,9 +395,13 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 | `RESEND_API_KEY` | `utils/resend/client.ts` | Send password-reset emails |
 | `RESEND_FROM_EMAIL` | `utils/resend/client.ts` | From address (defaults to `onboarding@resend.dev`) |
 | `COUNTER_DEVICE_SECRET` | `lib/auth/counter.ts` | HMAC secret signing the `gym_counter` device cookie (server-only) |
-| `NEXT_PUBLIC_SITE_URL` | `lib/auth/password-reset.ts` | Base URL for the password-reset `redirectTo` link |
+| `NEXT_PUBLIC_SITE_URL` | `lib/auth/password-reset.ts`, `scripts/push-supabase-auth-config.mjs` | Base URL for reset email links (`/auth/callback?token_hash=...&type=recovery&next=/reset`) and Auth config push |
+| `SUPABASE_ACCESS_TOKEN` | `scripts/push-supabase-auth-config.mjs` (deploy only) | Personal access token for Management API — **`npm run auth:push-config`** |
+| `SHIFT_ATTRIBUTION_LAUNCH_AT` | `lib/shifts/config.ts` | ISO timestamp cutoff for pending-attribution badge (defaults to migration launch if unset) |
 
 > The existing helpers read `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Keep those names. Never expose the service-role key or `COUNTER_DEVICE_SECRET` to the browser. A template is provided in `.env.example`; the 2 initial Admins are provisioned with `scripts/seed-admins.mjs`.
+>
+> **Supabase Dashboard (Auth → URL Configuration):** add `{NEXT_PUBLIC_SITE_URL}/auth/callback` to **Redirect URLs**. Set **Email OTP expiry** to **3600** seconds (1 hour) for password reset links — or run **`npm run auth:push-config`** with `SUPABASE_ACCESS_TOKEN` set.
 
 ---
 
@@ -379,7 +415,7 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer).
+- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts, counter-device binding, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer).
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 (`/pazar`, §2.4).
 - **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct. *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge, payment void + membership revert, monthly/yearly takings + Admin export, shifts, remote admin overview — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

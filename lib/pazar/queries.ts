@@ -3,6 +3,7 @@ import "server-only";
 import { getServerSupabase } from "@/lib/supabase/server-client";
 import { getMemberStatus } from "@/lib/members/status";
 import { paymentKindLabel } from "@/lib/pazar/format";
+import { getShiftAttributionLaunchAt } from "@/lib/shifts/config";
 import type {
   DayTotal,
   MonthTotal,
@@ -29,6 +30,8 @@ type RawPayment = {
   voided: boolean;
   paid_at: string;
   business_date: string;
+  shift_id: string | null;
+  waived_at: string | null;
   member: {
     member_no: number | null;
     first_name: string;
@@ -42,6 +45,7 @@ function mapPaymentRow(raw: RawPayment): PaymentRow {
   const member = unwrapJoin(raw.member);
   const mt = unwrapJoin(raw.membership_type);
   const staff = unwrapJoin(raw.staff);
+  const launchAt = getShiftAttributionLaunchAt();
 
   const label =
     mt?.label ??
@@ -62,16 +66,25 @@ function mapPaymentRow(raw: RawPayment): PaymentRow {
     paidAt: raw.paid_at,
     businessDate: raw.business_date,
     staffUsername: staff?.username ?? "—",
+    shiftId: raw.shift_id,
+    pendingAttribution:
+      raw.shift_id == null &&
+      raw.waived_at == null &&
+      raw.paid_at >= launchAt,
   };
 }
 
-export async function fetchDayPayments(businessDate: string): Promise<{
+export async function fetchDayPayments(
+  businessDate: string,
+  options?: { unassignedOnly?: boolean },
+): Promise<{
   rows: PaymentRow[];
   summary: TakingsSummary;
 }> {
   const supabase = await getServerSupabase();
+  const launchAt = getShiftAttributionLaunchAt();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("payment")
     .select(
       `
@@ -84,13 +97,23 @@ export async function fetchDayPayments(businessDate: string): Promise<{
       voided,
       paid_at,
       business_date,
+      shift_id,
+      waived_at,
       member ( member_no, first_name, last_name ),
       membership_type ( label ),
       staff!payment_staff_id_fkey ( username )
     `,
     )
-    .eq("business_date", businessDate)
-    .order("paid_at", { ascending: false });
+    .eq("business_date", businessDate);
+
+  if (options?.unassignedOnly) {
+    query = query
+      .is("shift_id", null)
+      .is("waived_at", null)
+      .gte("created_at", launchAt);
+  }
+
+  const { data, error } = await query.order("paid_at", { ascending: false });
 
   if (error) throw new Error(error.message);
 

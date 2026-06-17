@@ -14,6 +14,7 @@ import type {
   StaffOption,
 } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
+import { getShiftAttributionLaunchAt } from "@/lib/shifts/config";
 
 async function getClient() {
   return getServerSupabase();
@@ -29,6 +30,8 @@ type RawCheckin = {
   id: string;
   created_at: string;
   business_date: string;
+  shift_id: string | null;
+  waived_at: string | null;
   key_no: number | null;
   key_returned: boolean;
   checked_out_at: string | null;
@@ -59,17 +62,21 @@ type RawCheckin = {
 
 export async function fetchDayCheckins(
   businessDate: string,
+  options?: { unassignedOnly?: boolean },
 ): Promise<DashboardCheckinRow[]> {
   const supabase = await getClient();
   const today = businessToday();
+  const launchAt = getShiftAttributionLaunchAt();
 
-  const { data: checkins, error } = await supabase
+  let query = supabase
     .from("checkin")
     .select(
       `
       id,
       created_at,
       business_date,
+      shift_id,
+      waived_at,
       key_no,
       key_returned,
       checked_out_at,
@@ -99,8 +106,18 @@ export async function fetchDayCheckins(
     `,
     )
     .eq("business_date", businessDate)
-    .eq("voided", false)
-    .order("created_at", { ascending: false });
+    .eq("voided", false);
+
+  if (options?.unassignedOnly) {
+    query = query
+      .is("shift_id", null)
+      .is("waived_at", null)
+      .gte("created_at", launchAt);
+  }
+
+  const { data: checkins, error } = await query.order("created_at", {
+    ascending: false,
+  });
 
   if (error) throw new Error(error.message);
 
@@ -208,6 +225,11 @@ export async function fetchDayCheckins(
             kind: payment.kind,
           }
         : null,
+      shiftId: c.shift_id,
+      pendingAttribution:
+        c.shift_id == null &&
+        c.waived_at == null &&
+        c.created_at >= launchAt,
     };
   });
 }

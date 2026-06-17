@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.5
+Version: 1.7
 Date: 2026-06-17
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -10,6 +10,8 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.3 replaces the `training_type` enum with a runtime-manageable `training_category` lookup table; `membership_type`, `checkin`, `session_log`, and `reserved_session` now reference `training_category_id`. Migration: `20260615120000_training_category_refactor`.
 > v1.4 adds dashboard support: `checkin.is_group_fitpass`, soft-void columns, updated `checkin_open_key_idx`, and RPCs `create_checkin`, `void_checkin`, `capture_daily_price`. Migration: `20260615140000_dashboard_support` (applied to remote Supabase as `dashboard_support`, version `20260615192407`). Phone matching in `search_members` was briefly restored in v1.4 and removed again in `20260615200000_member_search_no_phone`; ambiguous 5-arg `match_phone` overload dropped in `20260615210000_search_members_single_overload`.
 > v1.5 adds **Pazar / payment MVP**: `membership_status` value `zakazana` (pre-paid queued renewal), RPCs `record_payment`, `void_payment`, `offered_membership_price`, `promote_memberships()` + daily `pg_cron` job, and group Fitpass +300 RSD charged atomically in `create_checkin`. Migrations: `20260617100000_add_membership_status_zakazana`, `20260617100100_payment_rpcs`, `20260617100200_payment_pgcron`, `20260617100300_group_fitpass_surcharge`, `20260617100400_fix_payment_rpcs_reserved_session_columns`.
+> v1.6 adds **shift lifecycle RPCs** `ensure_open_shift()` and `end_shift()` (migration `20260617100500_shift_rpcs`) and **login attempt cleanup** cron (migration `20260617100600_login_attempt_cleanup`).
+> v1.7 adds **shift attribution**: `shift_id` + `waived_*` on `checkin`/`payment`, `shift_one_open_uidx`, pending partial indexes on `created_at`, RPCs `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; drops `ensure_open_shift()`. Migration: `20260617100700_shift_attribution`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -127,11 +129,13 @@ create table shift (
 create index shift_staff_id_idx  on shift (staff_id);
 create index shift_started_at_idx on shift (started_at);
 create index shift_open_idx       on shift (staff_id) where ended_at is null;
+create unique index shift_one_open_uidx on shift ((true)) where ended_at is null;
 ```
 - Handover closes the open shift (`ended_reason = 'switch'`) and opens a new one.
 - A `pg_cron` job auto-closes stale open shifts (`auto_close`) at the gym's closing time + 20 min — see §8.
 - Admin **remote view-only** logins do not create a shift (the device is not the registered counter — see `Tech.md` §3/§5).
 - **Shift lifecycle (implemented):** opens automatically on counter login; a worker may **end** it manually (`ended_reason = 'logout'`); plain **sign-out does NOT close** the shift (it stays open until ended, handed over, or auto-closed).
+- **Counter workers** use RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, **`end_shift()`** (migration `20260617100700_shift_attribution`; see §12). Active staff may SELECT the open shift via RLS policy `shift_select_open`; admins see all shifts via `shift_select`.
 
 ### 3.3 `member`
 The virtual card. Soft-deletable; permanent member number.
@@ -292,6 +296,7 @@ create table payment (
   id                 uuid primary key default gen_random_uuid(),
   member_id          uuid references member (id) on delete restrict,      -- null = Fitpass
   staff_id           uuid not null references staff (id) on delete restrict,
+  shift_id           uuid references shift (id) on delete set null,       -- nullable pending attribution
   membership_type_id bigint references membership_type (id) on delete restrict,
   membership_id      uuid references membership (id) on delete set null,  -- created/extended membership (for revert)
   kind               payment_kind not null default 'membership',
@@ -305,6 +310,8 @@ create table payment (
   voided_by          uuid references staff (id),
   voided_at          timestamptz,
   void_reason        text,
+  waived_at          timestamptz,                                         -- admin resolved gap without shift
+  waived_by          uuid references staff (id),
   created_by         uuid references staff (id),
   created_at         timestamptz not null default now(),
   updated_by         uuid references staff (id),
@@ -318,7 +325,9 @@ create index payment_membership_id_idx       on payment (membership_id);
 create index payment_created_by_idx          on payment (created_by);
 create index payment_voided_by_idx           on payment (voided_by);
 -- daily/monthly/yearly takings: scan by business_date, exclude voided
-create index payment_business_date_idx       on payment (business_date) where not voided;
+create index payment_shift_id_idx            on payment (shift_id);
+create index payment_pending_attribution_idx on payment (created_at)
+  where shift_id is null and waived_at is null;
 ```
 - **Takings ("pazar")** = sum of `amount_rsd` grouped by `business_date` where `not voided` (net total).
 - **`kind='membership'`** — creates or queues a `membership` row; links `membership_id` for revert on void.
@@ -336,6 +345,7 @@ create table checkin (
   id                  uuid primary key default gen_random_uuid(),
   member_id           uuid references member (id) on delete restrict,     -- null = Fitpass
   staff_id            uuid not null references staff (id) on delete restrict,
+  shift_id            uuid references shift (id) on delete set null,
   membership_id       uuid references membership (id) on delete set null,
   key_no              int references gym_key (key_no),                    -- nullable: allowed when all keys taken
   with_trainer          boolean not null default false,
@@ -349,6 +359,8 @@ create table checkin (
   voided              boolean not null default false,   -- soft void (worker today / admin any day via void_checkin RPC)
   voided_at           timestamptz,
   voided_by           uuid references staff (id),
+  waived_at           timestamptz,
+  waived_by           uuid references staff (id),
   business_date       date not null,                                      -- Europe/Belgrade day
   created_at          timestamptz not null default now(),
   created_by          uuid references staff (id),
@@ -362,6 +374,9 @@ create table checkin (
 
 create index checkin_member_id_idx    on checkin (member_id);
 create index checkin_staff_id_idx      on checkin (staff_id);
+create index checkin_shift_id_idx      on checkin (shift_id);
+create index checkin_pending_attribution_idx on checkin (created_at)
+  where shift_id is null and waived_at is null;
 create index checkin_trainer_id_idx    on checkin (trainer_id);
 create index checkin_membership_id_idx on checkin (membership_id);
 create index checkin_key_no_idx        on checkin (key_no);
@@ -614,7 +629,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ## 8. Scheduled jobs (`pg_cron`)
 
-The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). Two jobs are registered.
+The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). Three jobs are registered.
 
 ### 8.1 Shift auto-close safety net
 `auto_close_shifts()` closes any still-open shift after the gym's **closing time + 20-minute grace**, stamping `ended_at` to the **actual closing time** (not "now") and `ended_reason = 'auto_close'`. It does **not** touch auth sessions, so a logged-in worker stays signed in.
@@ -672,6 +687,9 @@ Migration `20260617100200_payment_pgcron`. `promote_memberships()` runs daily at
 2. **Promote** — for members with no `aktivna`/`pauzirana` row, promote the **oldest** `zakazana` (`distinct on (member_id) … order by created_at asc`) to `aktivna` with `start_date = business_today()` and `end_date = start + duration_days - 1`.
 
 `EXECUTE` granted to `service_role` only (same pattern as `auto_close_shifts`).
+
+### 8.3 Login attempt cleanup
+Migration `20260617100600_login_attempt_cleanup`. `cleanup_login_attempts()` deletes rows older than **15 minutes** (matching the rate-limit sliding window). Scheduled every **15 minutes** via `cron.schedule('cleanup-login-attempts', '*/15 * * * *', …)`. `EXECUTE` granted to `service_role` only.
 
 ---
 
@@ -755,3 +773,34 @@ Soft-voids a payment. **Workers**: same business day only; **admins**: any day. 
 **Reverts**:
 - `debt_settlement` → unsettle linked `reserved_session`.
 - `membership` with unused linked membership → `delete from membership` (raises if check-ins or `session_log` exist).
+
+---
+
+## 12. Shift RPC functions
+
+Migration `20260617100700_shift_attribution` (replaces `20260617100500` handover-on-login model). `EXECUTE` granted to **`authenticated`** only.
+
+Counter-device binding (`gym_counter` cookie) is enforced in the app layer (`lib/shifts/actions.ts`), not inside these RPCs.
+
+### 12.1 `open_or_resume_shift() → text`
+**SECURITY INVOKER.** Returns `'opened' | 'resumed' | 'foreign_shift_open'`.
+
+| State | Action |
+|---|---|
+| No open shift | INSERT; return `'opened'` |
+| Same worker open | return `'resumed'` (no-op) |
+| Different worker open | return `'foreign_shift_open'` (no close — fail-open) |
+| Concurrent INSERT (`unique_violation` on `shift_one_open_uidx`) | Re-SELECT open shift; return `'resumed'` or `'foreign_shift_open'` |
+
+### 12.2 `handover_shift() → void`
+**SECURITY DEFINER.** Atomically: `SELECT … FOR UPDATE` on open shift → close other worker (`ended_reason = 'switch'`) → INSERT new shift for `auth.uid()`. Same worker already open → no-op.
+
+### 12.3 `end_shift() → void`
+**SECURITY INVOKER.** Closes authenticated worker's open shift (`ended_reason = 'logout'`). Does **not** sign out of Supabase Auth.
+
+### 12.4 Shift attribution on writes
+`create_checkin` and `record_payment` set `shift_id` from `SELECT id FROM shift WHERE ended_at IS NULL AND staff_id = auth.uid()` (nullable if none). Pending rows: `shift_id IS NULL AND waived_at IS NULL`. Admin reconcile sets `shift_id` or `waived_at`/`waived_by`.
+
+**Indexes:** `shift_one_open_uidx` (max one open shift globally); `checkin_pending_attribution_idx` / `payment_pending_attribution_idx` on `(created_at) WHERE shift_id IS NULL AND waived_at IS NULL`.
+
+**Launch cutoff:** env `SHIFT_ATTRIBUTION_LAUNCH_AT` (default `2026-06-17T10:07:00+00`) — badge excludes historical NULL rows.

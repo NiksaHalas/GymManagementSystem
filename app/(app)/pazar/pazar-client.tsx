@@ -13,16 +13,26 @@ import { Badge } from "@/components/ui/badge";
 import { formatFullName, formatMemberNo, formatRsd } from "@/lib/members/format";
 import { formatDate } from "@/lib/pazar/format";
 import type { PaymentRow, TakingsSummary } from "@/lib/pazar/types";
+import type { ShiftOption } from "@/lib/shifts/queries";
 import { PaymentRowActions } from "@/app/(app)/pazar/payment-row-actions";
+import { PaymentReconcileActions } from "@/components/payment-reconcile-actions";
 import { cn } from "@/lib/utils";
 
 interface PazarClientProps {
   rows: PaymentRow[];
   summary: TakingsSummary;
   canEdit: boolean;
+  reconcileMode?: boolean;
+  shifts?: ShiftOption[];
 }
 
-export function PazarClient({ rows, summary, canEdit }: PazarClientProps) {
+export function PazarClient({
+  rows,
+  summary,
+  canEdit,
+  reconcileMode = false,
+  shifts = [],
+}: PazarClientProps) {
   if (rows.length === 0) {
     return (
       <p className="text-muted-foreground py-8 text-center text-sm">
@@ -42,6 +52,7 @@ export function PazarClient({ rows, summary, canEdit }: PazarClientProps) {
             <TableHead>Radnik</TableHead>
             <TableHead className="text-right">Iznos</TableHead>
             <TableHead>Status</TableHead>
+            {reconcileMode && <TableHead>Atribucija smene</TableHead>}
             {canEdit && <TableHead className="text-right">Akcije</TableHead>}
           </TableRow>
         </TableHeader>
@@ -99,6 +110,15 @@ export function PazarClient({ rows, summary, canEdit }: PazarClientProps) {
                   <Badge variant="outline">važeća</Badge>
                 )}
               </TableCell>
+              {reconcileMode && (
+                <TableCell>
+                  <PaymentReconcileActions
+                    paymentId={row.id}
+                    businessDate={row.businessDate}
+                    shifts={shifts}
+                  />
+                </TableCell>
+              )}
               {canEdit && (
                 <TableCell className="text-right">
                   <PaymentRowActions row={row} canEdit={canEdit} />

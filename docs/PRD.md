@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.4
+Version: 1.5
 Date: 2026-06-17
 Status: Approved for development
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -8,6 +8,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
 > v1.3 adds **§9 Implementation status** tracking what is live in the app vs. deferred.
 > v1.4 marks **Pazar MVP** (§9.1) as implemented: cash payment, debt settlement, void/revert, daily takings, Admin month/year + CSV export, group Fitpass +300, queued `zakazana` renewals.
+> v1.5 notes **Phase 0 auth/shift hardening** delivered in code (shift RPCs, password reset SSR callback, login-attempt cleanup) — see `Tech.md` v1.4 / `DB.md` v1.6.
 
 ---
 
@@ -317,7 +318,7 @@ This section tracks delivery against the requirements above. Technical detail li
 ### 9.1 Done
 | Area | Scope |
 |---|---|
-| **Auth & shell** | Login, password reset, accounts, counter-device cookie, shifts, sidebar nav |
+| **Auth & shell** | Login, password reset (recovery email → link → set new password), accounts, counter-device cookie, shift lifecycle (auto-open, handover, manual end, auto-close safety net), sidebar nav |
 | **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
 | **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
 | **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |
