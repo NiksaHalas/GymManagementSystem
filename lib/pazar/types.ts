@@ -21,6 +21,8 @@ export interface PaymentRow {
   paidAt: string;
   businessDate: string;
   staffUsername: string;
+  shiftId?: string | null;
+  pendingAttribution?: boolean;
 }
 
 export interface TakingsSummary {

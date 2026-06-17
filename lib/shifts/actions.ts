@@ -4,128 +4,143 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { isCounterDevice } from "@/lib/auth/counter";
 import { getCurrentStaff } from "@/lib/auth/session";
 import { usernameToEmail } from "@/lib/auth/username";
-import type { Shift } from "@/lib/db/types";
+import { isTransientSupabaseError } from "@/lib/shifts/errors";
 
-/**
- * Fetch the currently open shift for a given staff member.
- * "Open" means ended_at IS NULL.
- */
-async function getOpenShift(staffId: string): Promise<Shift | null> {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  const { data } = await supabase
-    .from("shift")
-    .select("*")
-    .eq("staff_id", staffId)
-    .is("ended_at", null)
-    .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return (data as Shift | null) ?? null;
-}
+const COUNTER_REQUIRED_MSG =
+  "Ova akcija je dostupna samo na registrovanom šalteru.";
 
-/**
- * Fetch any open shift on the counter (regardless of worker).
- * Used during login to detect if a handover is needed.
- */
-async function getAnyOpenShift(): Promise<Shift | null> {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  const { data } = await supabase
-    .from("shift")
-    .select("*")
-    .is("ended_at", null)
-    .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return (data as Shift | null) ?? null;
-}
+const MAX_OPEN_RETRIES = 2;
+const RETRY_BACKOFF_MS = 300;
 
-/**
- * Open a new shift for a staff member (set started_at = now()).
- */
-async function openShift(staffId: string): Promise<void> {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  await supabase.from("shift").insert({
-    staff_id: staffId,
-    started_at: new Date().toISOString(),
-  });
-}
+export type ShiftOpenResult =
+  | { status: "ok" }
+  | { status: "foreign_shift_open" }
+  | { status: "error"; transient: boolean; message: string };
 
-/**
- * Close an existing shift by ID.
- */
-async function closeShift(
-  shiftId: string,
-  reason: Shift["ended_reason"],
-): Promise<void> {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  await supabase
-    .from("shift")
-    .update({
-      ended_at: new Date().toISOString(),
-      ended_reason: reason,
-    })
-    .eq("id", shiftId);
-}
-
-/**
- * Ensure an open shift exists for the given staff member on the counter device.
- * - If no open shift exists: open one.
- * - If an open shift belongs to a DIFFERENT worker: close it (switch) and open a new one.
- * - If the same worker already has an open shift: do nothing (idempotent).
- * Called from the (app) layout on every counter request.
- */
-export async function ensureOpenShift(staffId: string): Promise<void> {
-  const anyOpen = await getAnyOpenShift();
-
-  if (!anyOpen) {
-    // No open shift at all: open one for this worker
-    await openShift(staffId);
-    return;
+function mapOpenRpcResult(
+  value: string | null,
+  error: { message: string } | null,
+): ShiftOpenResult {
+  if (!error && value === "opened") return { status: "ok" };
+  if (!error && value === "resumed") return { status: "ok" };
+  if (!error && value === "foreign_shift_open") {
+    return { status: "foreign_shift_open" };
   }
 
-  if (anyOpen.staff_id === staffId) {
-    // Same worker already has an open shift — nothing to do
-    return;
+  if (error) {
+    return {
+      status: "error",
+      transient: isTransientSupabaseError(error),
+      message: error.message,
+    };
   }
 
-  // A different worker has an open shift: this is a login-time handover
-  await closeShift(anyOpen.id, "switch");
-  await openShift(staffId);
+  return {
+    status: "error",
+    transient: false,
+    message: "Neočekivan odgovor pri otvaranju smene.",
+  };
+}
+
+async function callOpenOrResumeShift(): Promise<ShiftOpenResult> {
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { data, error } = await supabase.rpc("open_or_resume_shift");
+
+  return mapOpenRpcResult(data, error);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Open or resume the caller's shift on the counter device (fail-open).
+ * Retries 1–2 times on transient errors only; unique_violation is handled in RPC.
+ */
+export async function openOrResumeShift(): Promise<ShiftOpenResult> {
+  if (!(await isCounterDevice())) {
+    return { status: "ok" };
+  }
+
+  let last: ShiftOpenResult = {
+    status: "error",
+    transient: false,
+    message: "Greška pri otvaranju smene.",
+  };
+
+  for (let attempt = 0; attempt <= MAX_OPEN_RETRIES; attempt++) {
+    last = await callOpenOrResumeShift();
+    if (last.status !== "error" || !last.transient) {
+      return last;
+    }
+    if (attempt < MAX_OPEN_RETRIES) {
+      await sleep(RETRY_BACKOFF_MS * (attempt + 1));
+    }
+  }
+
+  console.error("[openOrResumeShift]", last);
+  return last;
+}
+
+/**
+ * Server action: atomically take over the open shift (counter device only).
+ */
+export async function handoverShiftAction(): Promise<{ error: string | null }> {
+  if (!(await isCounterDevice())) {
+    return { error: COUNTER_REQUIRED_MSG };
+  }
+
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { error } = await supabase.rpc("handover_shift");
+
+  if (error) {
+    console.error("[handoverShiftAction]", error.message);
+    return { error: "Greška pri preuzimanju smene." };
+  }
+
+  revalidatePath("/", "layout");
+  return { error: null };
 }
 
 /**
  * Server action: manually end the current worker's shift.
- * Shift ends with ended_reason='logout'. The Supabase auth session is NOT touched.
  */
 export async function endShiftAction(): Promise<void> {
+  if (!(await isCounterDevice())) {
+    throw new Error(COUNTER_REQUIRED_MSG);
+  }
+
   const staff = await getCurrentStaff();
   if (!staff) redirect("/login");
 
-  const open = await getOpenShift(staff.id);
-  if (open) {
-    await closeShift(open.id, "logout");
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { error } = await supabase.rpc("end_shift");
+
+  if (error) {
+    console.error("[endShiftAction]", error.message);
+    throw new Error("Greška pri završetku smene.");
   }
 
   revalidatePath("/", "layout");
 }
 
 /**
- * Server action: switch worker on the counter.
- * Authenticates the incoming worker by username + password, closes the current
- * shift as 'switch', signs in the new worker, and opens a new shift.
- *
- * Returns an error string or null on success (for client-side handling).
+ * Server action: switch worker — sign in incoming worker, then handover_shift only.
  */
 export async function switchWorkerAction(
   username: string,
   password: string,
 ): Promise<{ error: string | null }> {
+  if (!(await isCounterDevice())) {
+    return { error: COUNTER_REQUIRED_MSG };
+  }
+
   const cookieStore = await cookies();
   const supabase = createClient(cookieStore);
 
@@ -137,7 +152,6 @@ export async function switchWorkerAction(
     return { error: "Neispravno korisničko ime ili lozinka." };
   }
 
-  // Check the new worker is active in staff table
   const { data: newStaff } = await supabase
     .from("staff")
     .select("id, active")
@@ -145,29 +159,26 @@ export async function switchWorkerAction(
     .single();
 
   if (!newStaff?.active) {
-    // Sign back out — this account is disabled
     await supabase.auth.signOut();
     return { error: "Nalog je deaktiviran." };
   }
 
-  // Close any open shift
-  const open = await getAnyOpenShift();
-  if (open) {
-    await closeShift(open.id, "switch");
+  const { error: shiftError } = await supabase.rpc("handover_shift");
+
+  if (shiftError) {
+    console.error("[switchWorkerAction]", shiftError.message);
+    return { error: "Greška pri otvaranju smene." };
   }
 
-  // Open a shift for the incoming worker
-  await openShift(newStaff.id);
   revalidatePath("/", "layout");
-
   return { error: null };
 }
 
-/**
- * Server action: sign out the current user.
- * Does NOT close the open shift (per product decision — shift stays open
- * until manually ended or auto-closed by pg_cron).
- */
+/** @deprecated Use openOrResumeShift — kept for gradual migration if referenced elsewhere. */
+export async function ensureOpenShift(): Promise<void> {
+  await openOrResumeShift();
+}
+
 export async function signOutAction(): Promise<void> {
   const cookieStore = await cookies();
   const supabase = createClient(cookieStore);

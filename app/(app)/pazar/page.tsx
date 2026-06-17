@@ -5,6 +5,7 @@ import {
   fetchMonthTakings,
   fetchYearTakings,
 } from "@/lib/pazar/queries";
+import { fetchShiftsForBusinessDay } from "@/lib/shifts/queries";
 import { PazarDateNav } from "@/app/(app)/pazar/date-nav";
 import { PazarClient } from "@/app/(app)/pazar/pazar-client";
 import { TakingsTabs } from "@/app/(app)/pazar/takings-tabs";
@@ -15,7 +16,7 @@ export const metadata = {
 };
 
 interface PazarPageProps {
-  searchParams: Promise<{ date?: string; view?: string }>;
+  searchParams: Promise<{ date?: string; view?: string; unassigned?: string }>;
 }
 
 function parseBusinessDate(raw: string | undefined, isAdmin: boolean): string {
@@ -35,15 +36,21 @@ function parseView(raw: string | undefined): "day" | "month" | "year" {
 export default async function PazarPage({ searchParams }: PazarPageProps) {
   const staff = await requireUser();
   const isAdmin = staff.role === "admin";
-  const { date, view: viewParam } = await searchParams;
+  const { date, view: viewParam, unassigned } = await searchParams;
   const businessDate = parseBusinessDate(date, isAdmin);
   const view = isAdmin ? parseView(viewParam) : "day";
+  const unassignedOnly = unassigned === "1";
 
   const [yearStr, monthStr] = businessDate.split("-");
   const year = parseInt(yearStr, 10);
   const month = parseInt(monthStr, 10);
 
-  const { rows, summary } = await fetchDayPayments(businessDate);
+  const [{ rows, summary }, shifts] = await Promise.all([
+    fetchDayPayments(businessDate, { unassignedOnly }),
+    isAdmin && unassignedOnly
+      ? fetchShiftsForBusinessDay(businessDate)
+      : Promise.resolve([]),
+  ]);
 
   const monthData =
     isAdmin && view === "month"
@@ -53,7 +60,7 @@ export default async function PazarPage({ searchParams }: PazarPageProps) {
     isAdmin && view === "year" ? await fetchYearTakings(year) : null;
 
   const isToday = businessDate === businessToday();
-  const canEdit = isAdmin || isToday;
+  const canEdit = (isAdmin || isToday) && !unassignedOnly;
 
   return (
     <div className="space-y-6">
@@ -67,7 +74,13 @@ export default async function PazarPage({ searchParams }: PazarPageProps) {
         <PazarDateNav businessDate={businessDate} blockFuture={!isAdmin} />
       </div>
 
-      {isAdmin && (
+      {unassignedOnly && isAdmin && (
+        <div className="rounded-md border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm">
+          Prikaz samo uplata bez dodeljene smene (od lansiranja atribucije).
+        </div>
+      )}
+
+      {isAdmin && !unassignedOnly && (
         <TakingsTabs
           businessDate={businessDate}
           view={view}
@@ -80,7 +93,7 @@ export default async function PazarPage({ searchParams }: PazarPageProps) {
         />
       )}
 
-      {(view === "day" || !isAdmin) && (
+      {(view === "day" || !isAdmin || unassignedOnly) && (
         <>
           <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
             Neto total za {businessDate}:{" "}
@@ -89,7 +102,13 @@ export default async function PazarPage({ searchParams }: PazarPageProps) {
               ({summary.count} uplata)
             </span>
           </div>
-          <PazarClient rows={rows} summary={summary} canEdit={canEdit} />
+          <PazarClient
+            rows={rows}
+            summary={summary}
+            canEdit={canEdit}
+            reconcileMode={isAdmin && unassignedOnly}
+            shifts={shifts}
+          />
         </>
       )}
     </div>

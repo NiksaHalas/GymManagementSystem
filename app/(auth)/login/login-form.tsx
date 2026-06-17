@@ -32,10 +32,35 @@ export function LoginForm() {
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const [showPassword, setShowPassword] = React.useState(false);
 
-  // Show a toast if the account was disabled (redirected with ?error=disabled)
+  // Show toasts for auth-related redirects
   React.useEffect(() => {
-    if (searchParams.get("error") === "disabled") {
+    const err = searchParams.get("error");
+    if (err === "disabled") {
       toast.error("Nalog je deaktiviran. Kontaktirajte administratora.");
+    } else if (err === "expired") {
+      toast.error(
+        "Link za reset lozinke je istekao ili je već iskorišćen. Zatražite novi.",
+        {
+          action: {
+            label: "Zaboravljena lozinka",
+            onClick: () => {
+              window.location.href = "/zaboravljena-lozinka";
+            },
+          },
+        },
+      );
+    } else if (err === "auth") {
+      toast.error(
+        "Prijava nije uspela — link je nevažeći ili istekao. Pokušajte ponovo ili zatražite novi link za reset lozinke.",
+        {
+          action: {
+            label: "Zaboravljena lozinka",
+            onClick: () => {
+              window.location.href = "/zaboravljena-lozinka";
+            },
+          },
+        },
+      );
     }
   }, [searchParams]);
 

@@ -50,6 +50,8 @@ import {
 import { formatMemberNo } from "@/lib/members/format";
 import type { DashboardCheckinRow } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
+import type { ShiftOption } from "@/lib/shifts/queries";
+import { CheckinReconcileActions } from "@/components/checkin-reconcile-actions";
 import { cn } from "@/lib/utils";
 
 interface ArrivalsTableProps {
@@ -57,6 +59,8 @@ interface ArrivalsTableProps {
   canOperate: boolean;
   occupiedOpenKeys: number[];
   onPayment?: (memberId: string, checkinId: string) => void;
+  reconcileMode?: boolean;
+  shifts?: ShiftOption[];
 }
 
 export function ArrivalsTable({
@@ -64,6 +68,8 @@ export function ArrivalsTable({
   canOperate,
   occupiedOpenKeys,
   onPayment,
+  reconcileMode = false,
+  shifts = [],
 }: ArrivalsTableProps) {
   const router = useRouter();
   const [keyDialog, setKeyDialog] = React.useState<DashboardCheckinRow | null>(null);
@@ -132,7 +138,10 @@ export function ArrivalsTable({
             <TableHead className="w-16">Ključ</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Uplata</TableHead>
-            {canOperate && <TableHead className="w-32 text-right">Akcije</TableHead>}
+            {reconcileMode && <TableHead>Atribucija smene</TableHead>}
+            {canOperate && !reconcileMode && (
+              <TableHead className="w-32 text-right">Akcije</TableHead>
+            )}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -205,7 +214,16 @@ export function ArrivalsTable({
                   </Badge>
                 )}
               </TableCell>
-              {canOperate && (
+              {reconcileMode && (
+                <TableCell>
+                  <CheckinReconcileActions
+                    checkinId={row.id}
+                    businessDate={row.businessDate}
+                    shifts={shifts}
+                  />
+                </TableCell>
+              )}
+              {canOperate && !reconcileMode && (
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     {row.keyNo != null && !row.keyReturned && (

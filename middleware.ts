@@ -5,10 +5,24 @@ import { createClient } from "@/utils/supabase/middleware";
  * Public routes that do not require authentication.
  * Everything else is protected; unauthenticated users are redirected to /login.
  */
-const PUBLIC_PATHS = ["/login", "/zaboravljena-lozinka", "/reset"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/zaboravljena-lozinka",
+  "/reset",
+  "/auth/callback",
+];
+
+/** Auth pages for guests only — logged-in users are sent to the app. */
+const GUEST_ONLY_AUTH_PATHS = ["/login", "/zaboravljena-lozinka"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
+}
+
+function isGuestOnlyAuthPath(pathname: string): boolean {
+  return GUEST_ONLY_AUTH_PATHS.some(
     (p) => pathname === p || pathname.startsWith(p + "/"),
   );
 }
@@ -23,8 +37,8 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Redirect authenticated users away from auth pages
-  if (user && isPublicPath(pathname)) {
+  // Redirect authenticated users away from login/forgot-password (not /reset or /auth/callback)
+  if (user && isGuestOnlyAuthPath(pathname)) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 

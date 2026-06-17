@@ -55,9 +55,14 @@ import type { Staff } from "@/lib/db/types";
 interface AppSidebarProps {
   staff: Staff;
   isCounter: boolean;
+  pendingAttributionCount?: number;
 }
 
-export function AppSidebar({ staff, isCounter }: AppSidebarProps) {
+export function AppSidebar({
+  staff,
+  isCounter,
+  pendingAttributionCount = 0,
+}: AppSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [endShiftOpen, setEndShiftOpen] = React.useState(false);
@@ -109,20 +114,43 @@ export function AppSidebar({ staff, isCounter }: AppSidebarProps) {
             <SidebarGroupLabel>Navigacija</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {mainNavItems.map((item) => (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={isNavActive(pathname, item.href)}
-                      tooltip={item.label}
-                    >
-                      <Link href={item.href}>
-                        <item.icon />
-                        <span>{item.label}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
+                {mainNavItems.map((item) => {
+                  const showBadge =
+                    staff.role === "admin" &&
+                    pendingAttributionCount > 0 &&
+                    (item.href === "/dashboard" || item.href === "/pazar");
+
+                  return (
+                    <SidebarMenuItem key={item.href}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={isNavActive(pathname, item.href)}
+                        tooltip={item.label}
+                      >
+                        <Link
+                          href={
+                            showBadge
+                              ? `${item.href}?unassigned=1`
+                              : item.href
+                          }
+                        >
+                          <item.icon />
+                          <span>{item.label}</span>
+                          {showBadge && (
+                            <Badge
+                              variant="destructive"
+                              className="ml-auto h-5 min-w-5 justify-center px-1 text-[10px]"
+                            >
+                              {pendingAttributionCount > 99
+                                ? "99+"
+                                : pendingAttributionCount}
+                            </Badge>
+                          )}
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

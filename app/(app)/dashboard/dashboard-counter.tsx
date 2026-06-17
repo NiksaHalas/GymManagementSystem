@@ -15,6 +15,7 @@ import type {
   SoonExpireMember,
   StaffOption,
 } from "@/lib/dashboard/types";
+import type { ShiftOption } from "@/lib/shifts/queries";
 
 interface DashboardCounterProps {
   businessDate: string;
@@ -23,6 +24,8 @@ interface DashboardCounterProps {
   soonExpire: SoonExpireMember[];
   staffOptions: StaffOption[];
   canOperate: boolean;
+  reconcileMode?: boolean;
+  shifts?: ShiftOption[];
 }
 
 export function DashboardCounter({
@@ -32,6 +35,8 @@ export function DashboardCounter({
   soonExpire,
   staffOptions,
   canOperate,
+  reconcileMode = false,
+  shifts = [],
 }: DashboardCounterProps) {
   const [checkinMemberId, setCheckinMemberId] = React.useState<string | null>(null);
   const [checkinOpen, setCheckinOpen] = React.useState(false);
@@ -58,7 +63,7 @@ export function DashboardCounter({
         <SoonExpireBadge members={soonExpire} />
       </div>
 
-      {canOperate && (
+      {canOperate && !reconcileMode && (
         <CheckinSearch
           onSelectMember={(id) => {
             setCheckinMemberId(id);
@@ -76,6 +81,8 @@ export function DashboardCounter({
             canOperate={canOperate}
             occupiedOpenKeys={occupiedOpenKeys}
             onPayment={(memberId, checkinId) => openPayment(memberId, checkinId)}
+            reconcileMode={reconcileMode}
+            shifts={shifts}
           />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
@@ -83,7 +90,7 @@ export function DashboardCounter({
         </aside>
       </div>
 
-      {canOperate && (
+      {canOperate && !reconcileMode && (
         <>
           <CheckinDialog
             memberId={checkinMemberId}
