@@ -68,6 +68,22 @@ async function main() {
   const siteUrl =
     env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
+  // Guard: never let a dev .env.local silently push a localhost site_url to the
+  // remote project — that breaks password-reset / magic-link emails for real
+  // users. Require an explicit opt-in for local/dev pushes.
+  const allowLocalhost = process.argv.includes("--allow-localhost");
+  const isLocalhost = /localhost|127\.0\.0\.1/i.test(siteUrl);
+  if (isLocalhost && !allowLocalhost) {
+    console.error(
+      `❌  Refusing to push a localhost site_url (${siteUrl}).\n` +
+        "    This script reads NEXT_PUBLIC_SITE_URL — most likely from a dev .env.local.\n" +
+        "    Run with the production URL instead, e.g.:\n" +
+        "      NEXT_PUBLIC_SITE_URL=https://your-app.vercel.app npm run auth:push-config\n" +
+        "    If you really intend to target local dev, re-run with --allow-localhost.",
+    );
+    process.exit(1);
+  }
+
   const headers = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
