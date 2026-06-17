@@ -56,12 +56,14 @@ interface ArrivalsTableProps {
   rows: DashboardCheckinRow[];
   canOperate: boolean;
   occupiedOpenKeys: number[];
+  onPayment?: (memberId: string, checkinId: string) => void;
 }
 
 export function ArrivalsTable({
   rows,
   canOperate,
   occupiedOpenKeys,
+  onPayment,
 }: ArrivalsTableProps) {
   const router = useRouter();
   const [keyDialog, setKeyDialog] = React.useState<DashboardCheckinRow | null>(null);
@@ -223,6 +225,13 @@ export function ArrivalsTable({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        {row.memberId && onPayment && (
+                          <DropdownMenuItem
+                            onClick={() => onPayment(row.memberId!, row.id)}
+                          >
+                            Naplati
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem
                           onClick={() => {
                             setKeyDialog(row);

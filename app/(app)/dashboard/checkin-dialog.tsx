@@ -48,6 +48,8 @@ interface CheckinDialogProps {
   onOpenChange: (open: boolean) => void;
   staffOptions: StaffOption[];
   occupiedOpenKeys: number[];
+  onPayMembership?: () => void;
+  paymentRefreshKey?: number;
 }
 
 export function CheckinDialog({
@@ -56,6 +58,8 @@ export function CheckinDialog({
   onOpenChange,
   staffOptions,
   occupiedOpenKeys,
+  onPayMembership,
+  paymentRefreshKey = 0,
 }: CheckinDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -67,6 +71,8 @@ export function CheckinDialog({
             onOpenChange={onOpenChange}
             staffOptions={staffOptions}
             occupiedOpenKeys={occupiedOpenKeys}
+            onPayMembership={onPayMembership}
+            paymentRefreshKey={paymentRefreshKey}
           />
         ) : (
           <DialogHeader>
@@ -83,6 +89,8 @@ interface CheckinDialogFormProps {
   onOpenChange: (open: boolean) => void;
   staffOptions: StaffOption[];
   occupiedOpenKeys: number[];
+  onPayMembership?: () => void;
+  paymentRefreshKey?: number;
 }
 
 function CheckinDialogForm({
@@ -90,6 +98,8 @@ function CheckinDialogForm({
   onOpenChange,
   staffOptions,
   occupiedOpenKeys,
+  onPayMembership,
+  paymentRefreshKey = 0,
 }: CheckinDialogFormProps) {
   const router = useRouter();
   const [ctx, setCtx] = React.useState<CheckinMemberContext | null>(null);
@@ -116,7 +126,7 @@ function CheckinDialogForm({
     return () => {
       cancelled = true;
     };
-  }, [memberId]);
+  }, [memberId, paymentRefreshKey]);
 
   const allKeysTaken = occupiedOpenKeys.length >= KEY_COUNT;
 
@@ -305,17 +315,29 @@ function CheckinDialogForm({
         </div>
       )}
 
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Otkaži
-        </Button>
-        <Button
-          type="button"
-          onClick={requestSubmit}
-          disabled={pending || loading || !ctx}
-        >
-          {pending ? "Snimanje…" : "Potvrdi dolazak"}
-        </Button>
+      <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+        {onPayMembership && (
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onPayMembership}
+            disabled={pending || loading || !ctx}
+          >
+            Naplati članarinu
+          </Button>
+        )}
+        <div className="flex gap-2 sm:ml-auto">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Otkaži
+          </Button>
+          <Button
+            type="button"
+            onClick={requestSubmit}
+            disabled={pending || loading || !ctx}
+          >
+            {pending ? "Snimanje…" : "Potvrdi dolazak"}
+          </Button>
+        </div>
       </DialogFooter>
 
       <AlertDialog open={commentAckOpen} onOpenChange={setCommentAckOpen}>

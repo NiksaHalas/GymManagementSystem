@@ -1,12 +1,13 @@
 # PRD — Gym Management System
 
-Version: 1.3
-Date: 2026-06-15
+Version: 1.4
+Date: 2026-06-17
 Status: Approved for development
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
 > v1.3 adds **§9 Implementation status** tracking what is live in the app vs. deferred.
+> v1.4 marks **Pazar MVP** (§9.1) as implemented: cash payment, debt settlement, void/revert, daily takings, Admin month/year + CSV export, group Fitpass +300, queued `zakazana` renewals.
 
 ---
 
@@ -309,7 +310,7 @@ Rules:
 
 ---
 
-## 9. Implementation status (as of 2026-06-15)
+## 9. Implementation status (as of 2026-06-17)
 
 This section tracks delivery against the requirements above. Technical detail lives in `Tech.md` / `DB.md`.
 
@@ -320,19 +321,18 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
 | **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
 | **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |
+| **Pazar ("Dnevne uplate")** | `/pazar`: daily payments table + net total + date nav; storno (mandatory reason) + edit amount/reason; shared `PaymentDialog` from dashboard search, arrivals row, check-in dialog, member card; membership payment (category → package → auto price, custom discount confirm, `start_mode`); debt settlement (per owed session); queued **`zakazana`** renewal when member already active; Admin month/year breakdown + CSV export |
+| **Payments on dashboard** | Standalone "Naplati" from search; "Naplati" on arrival row; "Naplati članarinu" in check-in dialog (pay then continue check-in); counter + today guard on `recordPayment` |
+| **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
-- **Payment on dashboard** — cash payment, custom price, discount price list (→ `/pazar` and member card).
-- **Group Fitpass +300 RSD** — check-in stores the group flag only; surcharge payment and takings inclusion come with `/pazar`.
 - **Auto session deduction** for non-trainer Open packages (8/1, 12/1) on solo arrival — trainer-tick path only in v1.
 - **Key-number search UI** — enter key → show last holder (occupancy panel shows current holders only).
 - **Offline / PWA** — check-in and payment queue when internet is down.
 
-### 9.3 Not started (MVP remainder)
-- **Pazar** — daily takings, payment recording, reserved-session settlement, payment void.
+### 9.3 Not started (post-MVP)
 - **Pause / resume** membership.
-- **Monthly / yearly takings** + Admin export.
 - **USB backup** companion script (scheduled 3×/day).
 - **Smene** — Admin shift history UI (`/smene` is a stub; shift lifecycle runs in the background).

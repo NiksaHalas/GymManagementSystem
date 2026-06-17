@@ -1,7 +1,7 @@
 # DB — Database Schema
 
-Version: 1.4
-Date: 2026-06-15
+Version: 1.5
+Date: 2026-06-17
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
@@ -9,6 +9,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.2 adds the authentication-system artifacts: the `login_attempt` rate-limit table (§3.13) and the `pg_cron` shift auto-close job (§8). Migrations: `20260614142000_add_login_attempt_table`, `20260614142100_pgcron_shift_autoclose`.
 > v1.3 replaces the `training_type` enum with a runtime-manageable `training_category` lookup table; `membership_type`, `checkin`, `session_log`, and `reserved_session` now reference `training_category_id`. Migration: `20260615120000_training_category_refactor`.
 > v1.4 adds dashboard support: `checkin.is_group_fitpass`, soft-void columns, updated `checkin_open_key_idx`, and RPCs `create_checkin`, `void_checkin`, `capture_daily_price`. Migration: `20260615140000_dashboard_support` (applied to remote Supabase as `dashboard_support`, version `20260615192407`). Phone matching in `search_members` was briefly restored in v1.4 and removed again in `20260615200000_member_search_no_phone`; ambiguous 5-arg `match_phone` overload dropped in `20260615210000_search_members_single_overload`.
+> v1.5 adds **Pazar / payment MVP**: `membership_status` value `zakazana` (pre-paid queued renewal), RPCs `record_payment`, `void_payment`, `offered_membership_price`, `promote_memberships()` + daily `pg_cron` job, and group Fitpass +300 RSD charged atomically in `create_checkin`. Migrations: `20260617100000_add_membership_status_zakazana`, `20260617100100_payment_rpcs`, `20260617100200_payment_pgcron`, `20260617100300_group_fitpass_surcharge`, `20260617100400_fix_payment_rpcs_reserved_session_columns`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -29,13 +30,13 @@ This document defines the database schema for the Gym Management System. It foll
 ### 1.1 Enumerated types
 ```sql
 create type staff_role          as enum ('user', 'admin');
-create type membership_status   as enum ('aktivna', 'istekla', 'pauzirana');
+create type membership_status   as enum ('aktivna', 'istekla', 'pauzirana', 'zakazana');
 create type membership_start_mode as enum ('payment', 'first_visit');
 create type payment_kind        as enum ('membership', 'debt_settlement', 'fitpass_surcharge');
 create type shift_end_reason    as enum ('logout', 'switch', 'auto_close', 'inactivity');
 ```
 
-> Note on membership status: the **"no membership"** state is represented by the **absence** of an active `membership` row for the member (not an enum value).
+> Note on membership status: the **"no membership"** state is represented by the **absence** of an active `membership` row for the member (not an enum value). **`zakazana`** = pre-paid renewal queued while the member still has an `aktivna`/`pauzirana` membership; it is intentionally **outside** `membership_one_active_uidx` so one active + N queued rows can coexist.
 
 ---
 
@@ -272,15 +273,16 @@ create index membership_member_id_idx        on membership (member_id);
 create index membership_membership_type_id_idx on membership (membership_type_id);
 create index membership_created_by_idx        on membership (created_by);
 create index membership_end_date_idx          on membership (end_date);   -- soon-to-expire queries
--- enforce a single active/paused membership per member
+-- enforce a single active/paused membership per member (zakazana is excluded)
 create unique index membership_one_active_uidx
   on membership (member_id)
   where status in ('aktivna', 'pauzirana');
 ```
-- **Start from first visit**: `start_date` is set on the member's first check-in; `end_date` is computed from it.
+- **Start from first visit**: `start_date` is set on the member's first check-in; `end_date` is computed from it. Not combined with `zakazana` (queued renewals always use `start_mode='payment'`).
 - **Pause/resume**: pausing sets `status='pauzirana'` and records `paused_at`; resuming adds the elapsed paused days to `paused_days` and **extends `end_date`** by that amount. No pause limit.
-- **Expiry**: a scheduled job (or read-time computation) flips `aktivna → istekla` when `end_date < today` and sessions are exhausted/expired. Remaining sessions may still be used after expiry via override.
-- **Renewal**: a new `membership` row (new period); prior rows remain as history.
+- **Expiry**: `promote_memberships()` (§8.2) flips `aktivna → istekla` when `end_date < business_today()` or session-based packages have `sessions_left <= 0`. Remaining sessions may still be used after expiry via override.
+- **Renewal while still active**: payment creates a new row with `status='zakazana'`; when the current membership ends, `promote_memberships()` promotes the oldest queued row to `aktivna` with fresh dates.
+- **Renewal with no active membership**: payment creates `status='aktivna'` immediately (`start_mode='payment'` or `'first_visit'`).
 
 ### 3.8 `payment`
 Cash payments. `member_id` is null for anonymous Fitpass.
@@ -319,8 +321,12 @@ create index payment_voided_by_idx           on payment (voided_by);
 create index payment_business_date_idx       on payment (business_date) where not voided;
 ```
 - **Takings ("pazar")** = sum of `amount_rsd` grouped by `business_date` where `not voided` (net total).
-- **Void** sets `voided=true` (kept in history) and a transaction **reverts the linked `membership`** change (restore `sessions_left`, roll back `end_date`/period).
-- **Custom price** enforced in app: `0 < amount_rsd < standard price`.
+- **`kind='membership'`** — creates or queues a `membership` row; links `membership_id` for revert on void.
+- **`kind='debt_settlement'`** — one payment row **per** unsettled `reserved_session`; links via `reserved_session.settled_payment_id`.
+- **`kind='fitpass_surcharge'`** — anonymous group Fitpass +300 RSD; `member_id` null, `is_fitpass=true`.
+- **Void** sets `voided=true` (kept in history). `void_payment` RPC reverts: unsettles linked debts; deletes unused `membership` rows (blocks if check-ins/session_log exist).
+- **Custom price** enforced in RPC: `0 < amount_rsd < offered price` when `is_custom_price=true`; offered price uses discount row when `member.discount_flag` + `otvoreni` category.
+- **Supabase embeds**: `payment` has four FKs to `staff` (`staff_id`, `created_by`, `voided_by`, `updated_by`). Join the cashier as `staff!payment_staff_id_fkey`.
 
 ### 3.9 `checkin`
 Daily arrivals. `member_id` null = Fitpass. Determines key occupancy.
@@ -337,7 +343,7 @@ create table checkin (
   trainer_id            uuid references staff (id),                         -- set when with_trainer
   decremented_session boolean not null default false,
   is_fitpass          boolean not null default false,
-  is_group_fitpass    boolean not null default false,   -- group Fitpass (+300 RSD charged later via payment)
+  is_group_fitpass    boolean not null default false,   -- group Fitpass (+300 RSD via payment in create_checkin)
   key_returned        boolean not null default false,                     -- "otišao" sets true
   checked_out_at      timestamptz,
   voided              boolean not null default false,   -- soft void (worker today / admin any day via void_checkin RPC)
@@ -608,7 +614,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ## 8. Scheduled jobs (`pg_cron`)
 
-The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). One job is registered.
+The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). Two jobs are registered.
 
 ### 8.1 Shift auto-close safety net
 `auto_close_shifts()` closes any still-open shift after the gym's **closing time + 20-minute grace**, stamping `ended_at` to the **actual closing time** (not "now") and `ended_reason = 'auto_close'`. It does **not** touch auth sessions, so a logged-in worker stays signed in.
@@ -659,6 +665,14 @@ select cron.schedule('auto-close-shifts', '*/10 14-20 * * *',
 - **DST-proof:** the schedule window is in UTC but the closing logic is computed in `Europe/Belgrade` inside the function, so it stays correct across CET/CEST.
 - `EXECUTE` is revoked from `public`/`anon`/`authenticated` so the `SECURITY DEFINER` function is not a public RPC endpoint.
 
+### 8.2 Membership expiry & queued renewal promotion
+Migration `20260617100200_payment_pgcron`. `promote_memberships()` runs daily at **01:05 UTC** (`cron.schedule('promote-memberships', '5 1 * * *', …)`); gates on `business_today()`.
+
+1. **Expire** — `update membership set status='istekla'` where `status='aktivna'` and (`end_date < business_today()` OR session-based with `sessions_left <= 0`). Skips `pauzirana`.
+2. **Promote** — for members with no `aktivna`/`pauzirana` row, promote the **oldest** `zakazana` (`distinct on (member_id) … order by created_at asc`) to `aktivna` with `start_date = business_today()` and `end_date = start + duration_days - 1`.
+
+`EXECUTE` granted to `service_role` only (same pattern as `auto_close_shifts`).
+
 ---
 
 ## 9. Member search (`pg_trgm`)
@@ -688,13 +702,14 @@ Atomically inserts a `checkin` row and applies side effects:
 | `p_member_id` | Required unless Fitpass |
 | `p_key_no` | Optional for members (all keys taken); **required for Fitpass** |
 | `p_with_trainer` | When true, requires `p_training_category_id` + `p_trainer_id` (trainer-based category) |
-| `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag implies +300 RSD (payment deferred to app) |
+| `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag inserts immediate `payment` `kind='fitpass_surcharge'` (+300 RSD) |
 | `p_business_date` | Defaults to `business_today()` |
 
 **Side effects** (when applicable):
 - Trainer session + sessions left > 0 → decrement `membership.sessions_left`, insert `session_log`, set `decremented_session = true`.
 - Trainer session + 0 sessions → insert `reserved_session` with `amount_rsd = capture_daily_price(...)`.
 - `start_mode = 'first_visit'` + first check-in → set `start_date` / `end_date` on membership.
+- Group Fitpass (`p_is_fitpass and p_is_group_fitpass`) → insert `payment` (+300 RSD, `member_id` null).
 - Validates: active member, valid key, active trainer, category is trainer-based.
 
 ### 10.3 `void_checkin(p_checkin_id uuid) → void`
@@ -706,3 +721,37 @@ Soft-voids a check-in (`voided = true`, audit columns). **Workers**: same busine
 - May clear `first_visit` activation if this was the member's only non-voided check-in.
 
 Voided rows are excluded from day lists and from `checkin_open_key_idx` (key occupancy).
+
+---
+
+## 11. Payment RPC functions
+
+Migrations `20260617100100_payment_rpcs`, `20260617100400_fix_payment_rpcs_reserved_session_columns`. All are **`security definer`** with `set search_path = public`; `EXECUTE` granted to `authenticated` only (except `promote_memberships`, §8.2).
+
+### 11.1 `offered_membership_price(p_membership_type_id, p_member_id) → int`
+Returns the price to charge for a membership type: standard active `price` row, or the discount row when `member.discount_flag` and the type's category code is `otvoreni`.
+
+### 11.2 `record_payment(...) → uuid`
+Atomically records cash payment(s). Returns the primary payment id (membership payment, or first debt-settlement id when debt-only).
+
+| Parameter | Notes |
+|---|---|
+| `p_member_id` | Required |
+| `p_membership_type_id` | Null = skip membership (debt-only allowed) |
+| `p_amount_rsd` / `p_is_custom_price` / `p_custom_reason` | Membership amount; custom must be `0 < amount < offered` |
+| `p_start_mode` | `'payment'` or `'first_visit'` when no active membership; ignored for `zakazana` |
+| `p_settle_reserved_ids` | UUID[] of unsettled `reserved_session` rows to settle (one `debt_settlement` payment each) |
+| `p_checkin_id` | Optional logical link (does not mutate check-in) |
+| `p_business_date` | Defaults to `business_today()` |
+
+**Side effects**:
+- Membership payment + no active/paused membership → insert `membership` `status='aktivna'`.
+- Membership payment + active/paused exists → insert `membership` `status='zakazana'`, `start_mode='payment'`.
+- Each settled debt → insert `payment` `kind='debt_settlement'`, mark `reserved_session.settled=true`.
+
+### 11.3 `void_payment(p_payment_id, p_reason) → void`
+Soft-voids a payment. **Workers**: same business day only; **admins**: any day. Reason required.
+
+**Reverts**:
+- `debt_settlement` → unsettle linked `reserved_session`.
+- `membership` with unused linked membership → `delete from membership` (raises if check-ins or `session_log` exist).

@@ -1,5 +1,5 @@
 export type StaffRole = "user" | "admin";
-export type MembershipStatus = "aktivna" | "istekla" | "pauzirana";
+export type MembershipStatus = "aktivna" | "istekla" | "pauzirana" | "zakazana";
 export type MembershipStartMode = "payment" | "first_visit";
 export type PaymentKind =
   | "membership"

@@ -59,7 +59,7 @@ export function FitpassDialog({
       }
       toast.success(
         isGroup
-          ? "Fitpass grupni dolazak je zabeležen (uplata +300 kasnije)."
+          ? "Fitpass grupni dolazak je zabeležen (+300 RSD naplaćeno)."
           : "Fitpass dolazak je zabeležen.",
       );
       onOpenChange(false);
@@ -108,7 +108,7 @@ export function FitpassDialog({
             onCheckedChange={(v) => setIsGroup(v === true)}
           />
           <Label htmlFor="fitpass-group" className="text-sm font-normal">
-            Grupni trening (+300 RSD — uplata kasnije)
+            Grupni trening (+300 RSD, naplaćeno odmah)
           </Label>
         </div>
 

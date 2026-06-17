@@ -8,6 +8,7 @@ import { CheckinDialog } from "@/app/(app)/dashboard/checkin-dialog";
 import { FitpassDialog } from "@/app/(app)/dashboard/fitpass-dialog";
 import { ArrivalsTable } from "@/app/(app)/dashboard/arrivals-table";
 import { KeysPanel } from "@/app/(app)/dashboard/keys-panel";
+import { PaymentDialog } from "@/components/payment/payment-dialog";
 import type {
   DashboardCheckinRow,
   KeyHolder,
@@ -35,6 +36,16 @@ export function DashboardCounter({
   const [checkinMemberId, setCheckinMemberId] = React.useState<string | null>(null);
   const [checkinOpen, setCheckinOpen] = React.useState(false);
   const [fitpassOpen, setFitpassOpen] = React.useState(false);
+  const [paymentMemberId, setPaymentMemberId] = React.useState<string | null>(null);
+  const [paymentCheckinId, setPaymentCheckinId] = React.useState<string | null>(null);
+  const [paymentOpen, setPaymentOpen] = React.useState(false);
+  const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
+
+  function openPayment(memberId: string, checkinId: string | null = null) {
+    setPaymentMemberId(memberId);
+    setPaymentCheckinId(checkinId);
+    setPaymentOpen(true);
+  }
 
   const occupiedOpenKeys = keyHolders
     .filter((k) => k.isOpen)
@@ -54,6 +65,7 @@ export function DashboardCounter({
             setCheckinOpen(true);
           }}
           onFitpass={() => setFitpassOpen(true)}
+          onPayment={(id) => openPayment(id)}
         />
       )}
 
@@ -63,6 +75,7 @@ export function DashboardCounter({
             rows={checkins}
             canOperate={canOperate}
             occupiedOpenKeys={occupiedOpenKeys}
+            onPayment={(memberId, checkinId) => openPayment(memberId, checkinId)}
           />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
@@ -81,6 +94,23 @@ export function DashboardCounter({
             }}
             staffOptions={staffOptions}
             occupiedOpenKeys={occupiedOpenKeys}
+            onPayMembership={() => {
+              if (checkinMemberId) openPayment(checkinMemberId);
+            }}
+            paymentRefreshKey={paymentRefreshKey}
+          />
+          <PaymentDialog
+            memberId={paymentMemberId}
+            checkinId={paymentCheckinId}
+            open={paymentOpen}
+            onOpenChange={(o) => {
+              setPaymentOpen(o);
+              if (!o) {
+                setPaymentMemberId(null);
+                setPaymentCheckinId(null);
+              }
+            }}
+            onPaid={() => setPaymentRefreshKey((k) => k + 1)}
           />
           <FitpassDialog
             open={fitpassOpen}

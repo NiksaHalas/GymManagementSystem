@@ -30,6 +30,12 @@ import {
 import { DiscountToggle, CommentEditor } from "./quick-edits";
 import { EditMemberDialog } from "./edit-member-dialog";
 import { ArchiveControls } from "./archive-controls";
+import { MemberPayButton } from "./member-pay-button";
+import { PaymentRowActions } from "@/app/(app)/pazar/payment-row-actions";
+import { fetchScheduledMemberships } from "@/lib/pazar/queries";
+import { businessToday } from "@/lib/time/business-day";
+import { paymentKindLabel } from "@/lib/pazar/format";
+import type { PaymentRow } from "@/lib/pazar/types";
 
 const STATUS_VARIANT: Record<
   MemberStatusKind,
@@ -79,7 +85,8 @@ export default async function MemberCardPage({
 
   if (!member) notFound();
 
-  const [membershipRes, paymentsRes, sessionsRes, reservedRes] = await Promise.all([
+  const [membershipRes, paymentsRes, sessionsRes, reservedRes, scheduledMemberships] =
+    await Promise.all([
     supabase
       .from("membership")
       .select(
@@ -91,7 +98,9 @@ export default async function MemberCardPage({
       .limit(1),
     supabase
       .from("payment")
-      .select("id, amount_rsd, kind, is_custom_price, custom_reason, voided, paid_at, business_date, membership_type(label)")
+      .select(
+        "id, amount_rsd, kind, is_custom_price, custom_reason, voided, paid_at, business_date, membership_type(label), staff!payment_staff_id_fkey(username)",
+      )
       .eq("member_id", id)
       .order("paid_at", { ascending: false })
       .limit(100),
@@ -106,6 +115,7 @@ export default async function MemberCardPage({
       .select("id, session_date, amount_rsd, settled, settled_at, training_category(label)")
       .eq("member_id", id)
       .order("session_date", { ascending: false }),
+    fetchScheduledMemberships(id),
   ]);
 
   const currentMembership = membershipRes.data?.[0] ?? null;
@@ -128,6 +138,28 @@ export default async function MemberCardPage({
       : null,
   );
 
+  const paymentRows: PaymentRow[] = payments.map((p) => {
+    const mt = p.membership_type as unknown as { label: string } | null;
+    const staffUser = p.staff as unknown as { username: string } | null;
+    const kind = p.kind as PaymentRow["kind"];
+    return {
+      id: p.id,
+      memberId: member.id,
+      memberNo: member.member_no,
+      memberFirstName: member.first_name,
+      memberLastName: member.last_name,
+      kind,
+      label: mt?.label ?? paymentKindLabel(kind),
+      amountRsd: p.amount_rsd,
+      isCustomPrice: p.is_custom_price,
+      customReason: p.custom_reason,
+      voided: p.voided,
+      paidAt: p.paid_at,
+      businessDate: p.business_date,
+      staffUsername: staffUser?.username ?? "—",
+    };
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -138,6 +170,7 @@ export default async function MemberCardPage({
           </Link>
         </Button>
         <div className="flex items-center gap-2">
+          <MemberPayButton memberId={member.id} />
           <EditMemberDialog member={member} />
           <ArchiveControls memberId={member.id} archived={member.archived} isAdmin={isAdmin} />
         </div>
@@ -230,6 +263,37 @@ export default async function MemberCardPage({
         </CardContent>
       </Card>
 
+      {/* Scheduled memberships */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Zakazane (unapred plaćene) članarine</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {scheduledMemberships.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nema zakazanih članarina.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Paket</TableHead>
+                  <TableHead>Tip</TableHead>
+                  <TableHead>Kreirano</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {scheduledMemberships.map((m) => (
+                  <TableRow key={m.id}>
+                    <TableCell>{m.package}</TableCell>
+                    <TableCell>{m.label}</TableCell>
+                    <TableCell>{formatDate(m.createdAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Reserved / owed sessions */}
       <Card>
         <CardHeader>
@@ -293,38 +357,37 @@ export default async function MemberCardPage({
                   <TableHead>Stavka</TableHead>
                   <TableHead>Iznos</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Akcije</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {payments.map((p) => {
-                  const mt = p.membership_type as unknown as { label: string } | null;
-                  return (
-                    <TableRow key={p.id} className={p.voided ? "opacity-50" : ""}>
-                      <TableCell>{formatDate(p.business_date)}</TableCell>
-                      <TableCell>
-                        {mt?.label ??
-                          (p.kind === "debt_settlement"
-                            ? "Izmirenje duga"
-                            : p.kind === "fitpass_surcharge"
-                              ? "Fitpass doplata"
-                              : "Uplata")}
-                        {p.is_custom_price && (
-                          <Badge variant="outline" className="ml-2 text-[10px]">
-                            popust
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>{formatRsd(p.amount_rsd)}</TableCell>
-                      <TableCell>
-                        {p.voided ? (
-                          <Badge variant="secondary">stornirano</Badge>
-                        ) : (
-                          <Badge variant="outline">važeća</Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {paymentRows.map((p) => (
+                  <TableRow key={p.id} className={p.voided ? "opacity-50" : ""}>
+                    <TableCell>{formatDate(p.businessDate)}</TableCell>
+                    <TableCell>
+                      {p.label}
+                      {p.isCustomPrice && (
+                        <Badge variant="outline" className="ml-2 text-[10px]">
+                          popust
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>{formatRsd(p.amountRsd)}</TableCell>
+                    <TableCell>
+                      {p.voided ? (
+                        <Badge variant="secondary">stornirano</Badge>
+                      ) : (
+                        <Badge variant="outline">važeća</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <PaymentRowActions
+                        row={p}
+                        canEdit={isAdmin || p.businessDate === businessToday()}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Ticket, UserPlus } from "lucide-react";
+import { Ticket, UserPlus, Banknote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -24,9 +24,10 @@ import { CreateMemberDialog } from "@/app/(app)/clanovi/create-member-dialog";
 interface CheckinSearchProps {
   onSelectMember: (memberId: string) => void;
   onFitpass: () => void;
+  onPayment: (memberId: string) => void;
 }
 
-export function CheckinSearch({ onSelectMember, onFitpass }: CheckinSearchProps) {
+export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinSearchProps) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [rows, setRows] = React.useState<MemberSearchRow[]>([]);
@@ -107,12 +108,29 @@ export function CheckinSearch({ onSelectMember, onFitpass }: CheckinSearchProps)
                       onSelectMember(m.id);
                     }}
                   >
-                    <div className="flex flex-col">
-                      <span>{formatFullName(m.first_name, m.last_name)}</span>
-                      <span className="text-muted-foreground text-xs">
-                        {formatMemberNo(m.member_no)} · {m.phone}
-                        {m.membership_label ? ` · ${m.membership_label}` : ""}
-                      </span>
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <div className="flex flex-col">
+                        <span>{formatFullName(m.first_name, m.last_name)}</span>
+                        <span className="text-muted-foreground text-xs">
+                          {formatMemberNo(m.member_no)} · {m.phone}
+                          {m.membership_label ? ` · ${m.membership_label}` : ""}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpen(false);
+                          setQuery("");
+                          onPayment(m.id);
+                        }}
+                      >
+                        <Banknote className="mr-1 h-3 w-3" />
+                        Naplati
+                      </Button>
                     </div>
                   </CommandItem>
                 ))}

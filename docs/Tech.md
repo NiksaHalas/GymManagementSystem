@@ -1,13 +1,14 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.2
-Date: 2026-06-15
+Version: 1.3
+Date: 2026-06-17
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
 
 > v1.1 records the implemented **Members ("Članovi")** feature (list + fuzzy search + virtual card + create/edit/archive) under `(app)/clanovi`, the supporting `lib/members/` and `lib/time/` helpers, and the member-search migrations (mirrored in `DB.md` §9). See §2.1, §7, and §12.
 > v1.2 records the implemented **Dashboard (daily check-in)** under `(app)/dashboard`, `lib/dashboard/`, Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10), the `training_category` refactor on `/cene`, session/auth deduplication (`lib/supabase/server-client.ts`, `React.cache()` + `getUser()` in server components), migration `20260615140000_dashboard_support` (applied remotely as `dashboard_support`), and member-search cleanup migrations `20260615200000` / `20260615210000` (no phone; single RPC overload).
+> v1.3 records the implemented **Pazar / payment MVP**: `(app)/pazar`, `lib/pazar/`, shared `components/payment/payment-dialog.tsx`, Postgres RPCs `record_payment` / `void_payment` / `promote_memberships` (`DB.md` §8.2, §11), group Fitpass +300 in `create_checkin`, payment entry points on dashboard + member card, Admin CSV export (`/api/admin/pazar/export`). Migrations `20260617100000`–`20260617100400`.
 
 ---
 
@@ -128,13 +129,16 @@ app/
       [id]/                     # virtual card: status, quick edits, membership, history, archive (implemented)
     cene/                       # membership prices (implemented: tabbed catalog, inline price edit)
       actions.ts, cene-client.tsx, price-cell.tsx, add-type-dialog.tsx
-    pazar/                      # daily/monthly/yearly takings (placeholder page)
+    pazar/                      # daily takings + Admin month/year (implemented)
+      actions.ts, page.tsx, pazar-client.tsx, date-nav.tsx, takings-tabs.tsx, payment-row-actions.tsx
     smene/                      # shifts admin view (stub page; lifecycle in lib/shifts/)
     nalozi/                     # accounts (admin) + counter-device toggle (implemented)
   api/
     admin/accounts/             # service-role account management (implemented)
+    admin/pazar/export/         # Admin CSV export for takings (implemented)
 components/
   ui/                           # shadcn primitives
+  payment/payment-dialog.tsx    # shared cash-payment dialog (implemented)
   app-sidebar.tsx, app-header.tsx, switch-worker-dialog.tsx, counter-device-toggle.tsx, placeholder-page.tsx  # (implemented)
 lib/
   utils.ts                      # cn() + helpers
@@ -144,6 +148,7 @@ lib/
   members/                      # member zod schema, status derivation, types, formatting (implemented)
   catalog/                      # membership catalog view-models (implemented)
   dashboard/                    # dashboard queries, zod schemas, format (implemented)
+  pazar/                        # payment queries, catalog, zod schemas, format (implemented)
   supabase/
     server-client.ts            # cached getServerSupabase() per RSC request (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
@@ -184,15 +189,40 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 - `fetchDayStats(businessDate, keyHolders?)` — counts for admin overview.
 
 **Mutations** (`dashboard/actions.ts`): all guarded by `requireCounterToday()` (counter device + today). Call Postgres RPCs for atomic side effects:
-- `checkInMember` → `create_checkin`
-- `checkInFitpass` → `create_checkin` (`is_fitpass`, optional `is_group_fitpass` flag)
+- `createMemberCheckin` → `create_checkin`
+- `createFitpassCheckin` → `create_checkin` (`is_fitpass`, optional `is_group_fitpass` — group inserts +300 RSD payment)
 - `markLeft` → `key_returned` update
 - `updateCheckinKey` → key reassignment on today's open check-in
 - `voidCheckin` → `void_checkin`
 
+**Payment entry points** (shared `PaymentDialog` → `pazar/actions.recordPayment`):
+- `checkin-search` — "Naplati" per search result (standalone, no check-in)
+- `arrivals-table` — row menu "Naplati" (optional `checkinId`)
+- `checkin-dialog` — "Naplati članarinu" (pay then continue check-in; context reloads after payment)
+- Member card — `MemberPayButton` in header (visible to all; mutation still requires counter + today)
+
 **UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (key, trainer tick + category + trainer select, comment popup, reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
 
-**Deferred from dashboard v1** (see `PRD.md` §9): payment dialog on dashboard, group Fitpass +300 RSD payment (flag only), offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI.
+**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI.
+
+### 2.4 Pazar (daily takings & cash payment)
+Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
+
+**Page** (`page.tsx`):
+- Parses `?date=` (default today) and `?view=day|month|year` (Admin only).
+- Workers: date limited to today and past; storno/edit on today's rows only.
+- Fetches `fetchDayPayments`; Admin month/year via `fetchMonthTakings` / `fetchYearTakings`.
+
+**Mutations** (`pazar/actions.ts`):
+- `recordPayment` — `requireCounterToday()` → RPC `record_payment`; revalidates `/dashboard`, `/pazar`, member card.
+- `voidPayment` — `requireUser()` → RPC `void_payment` (RLS + RPC enforce same-day for workers).
+- `editPayment` — direct `payment` update (amount + custom reason; membership kind only).
+
+**PaymentDialog** (client): loads `fetchPaymentContext` + catalog; category → package selects; discount default for `otvoreni` + `discount_flag`; custom price confirm; debt checkboxes (default all checked); `start_mode` when no active membership.
+
+**Admin export**: `GET /api/admin/pazar/export?period=day|month|year&date=YYYY-MM-DD` → CSV (includes voided rows with status column).
+
+**Queries note**: Supabase embed for cashier must use `staff!payment_staff_id_fkey` because `payment` has four FKs to `staff`.
 
 ---
 
@@ -289,15 +319,16 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows holder. **Key-number search UI** not yet built. |
 | Membership status badges | **(implemented)** on dashboard rows via member status; red "istekla članarina" marker |
 | Trainer session + session deduction | **(implemented)** check-in dialog + `create_checkin` RPC: optional trainer tick, decrement, `session_log`, reserved session at 0 sessions. **Non-trainer** Open 8/1 & 12/1 auto-deduct **deferred**. |
-| Reserved (owed) session | **(partial)** creation at check-in via RPC; display on member card; warn-after-3 on check-in dialog; settlement on `/pazar` **not yet built** |
+| Reserved (owed) session | **(implemented)** creation at check-in via RPC; display on member card; warn-after-3 on check-in dialog; settlement via `record_payment` (`debt_settlement` per row) from `PaymentDialog` |
 | Soon-to-expire (≤3 days) | **(implemented)** `fetchSoonToExpire` + header badge on dashboard |
-| Fitpass | **(partial v1)** anonymous check-in + mandatory key via `fitpass-dialog`; `is_group_fitpass` flag stored; **+300 RSD payment deferred** to `/pazar` |
-| Payments / custom price / discount | **(not on dashboard v1)** read-only payment badge on arrival rows; full payment flow → `/pazar` + member card |
-| Takings ("pazar") | Aggregations by business date; net of voided payments; monthly/yearly views gated to Admin via RLS |
-| Payment void + membership revert | Transaction marks payment voided and reverts the linked membership change |
+| Fitpass | **(implemented)** anonymous check-in + mandatory key via `fitpass-dialog`; group Fitpass inserts immediate +300 RSD `fitpass_surcharge` payment in `create_checkin` |
+| Payments / custom price / discount | **(implemented)** shared `PaymentDialog`; RPC `record_payment` + `offered_membership_price`; custom price confirm; Otvoreni discount when `discount_flag`; entry from dashboard + member card |
+| Takings ("pazar") | **(implemented)** `(app)/pazar`: daily table + net total; Admin month/year tabs; RLS gates past-day edits for workers |
+| Payment void + membership revert | **(implemented)** RPC `void_payment`; UI on `/pazar` + member card (`payment-row-actions`); membership delete blocked if used |
+| Queued renewal (`zakazana`) | **(implemented)** payment while active creates `zakazana`; `promote_memberships()` pg_cron promotes oldest when prior membership ends |
+| Reports export (Admin) | **(implemented)** `GET /api/admin/pazar/export` → CSV |
 | Prices admin | **(implemented)** `(app)/cene`: tabbed by `training_category`, inline price edit (Admin), add/deactivate types & categories; read-only for workers. Server actions in `cene/actions.ts`; view-models in `lib/catalog/` |
 | Shifts | See §5 |
-| Reports export (Admin) | Route handler streams CSV/JSON of the selected report |
 | Notifications | In-app only via toasts/badges (`sonner`); no email/SMS to members |
 
 ---
@@ -317,7 +348,7 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 ## 9. Hosting & deployment
 
 - **App** on **Vercel** (Next.js native). **DB/Auth** on **Supabase**.
-- **Cron**: shift auto-close and any periodic tasks via Vercel Cron (route handler) or Supabase `pg_cron`.
+- **Cron**: shift auto-close and membership promotion via Supabase `pg_cron` (`auto_close_shifts`, `promote_memberships`); optional Vercel Cron for app-level tasks.
 - Migrations applied through the Supabase CLI; types regenerated after each migration.
 
 ---
@@ -349,6 +380,6 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 
 ## 12. Phased delivery (maps to SoW)
 - **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset, admin accounts, counter-device binding, shift lifecycle + `pg_cron` auto-close, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav, worker/shift controls in the footer).
-- **Phase 1 — Core (MVP)**: **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`, tabbed catalog + inline Admin edit). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Remaining for MVP:** cash payment + custom price + discount list + daily takings (`/pazar`), group Fitpass +300 settlement.
-- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; payment void + membership revert; monthly/yearly takings; Admin export. *(Trainer sessions, reserved debt at check-in, Fitpass entry, key occupancy, soon-to-expire, shifts, remote admin overview — **done in dashboard v1**.)*
+- **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 (`/pazar`, §2.4).
+- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct. *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge, payment void + membership revert, monthly/yearly takings + Admin export, shifts, remote admin overview — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.
