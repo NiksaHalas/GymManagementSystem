@@ -14,8 +14,3 @@ export const memberFormSchema = z.object({
 });
 
 export type MemberFormValues = z.infer<typeof memberFormSchema>;
-
-/** Strips non-digits for duplicate-phone comparison. */
-export function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "");
-}

@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { cookies } from "next/headers";
 import { ArrowLeft, AlertTriangle } from "lucide-react";
-import { createClient } from "@/utils/supabase/server";
+import { getServerSupabase } from "@/lib/supabase/server-client";
 import { getCurrentStaff } from "@/lib/auth/session";
 import {
   Card,
@@ -55,8 +54,7 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
+  const supabase = await getServerSupabase();
   const { data } = await supabase
     .from("member")
     .select("first_name, last_name")
@@ -72,8 +70,7 @@ export default async function MemberCardPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
+  const supabase = await getServerSupabase();
   const staff = await getCurrentStaff();
   const isAdmin = staff?.role === "admin";
 
@@ -98,7 +95,7 @@ export default async function MemberCardPage({
     supabase
       .from("payment")
       .select(
-        "id, amount_rsd, kind, is_custom_price, custom_reason, voided, paid_at, business_date, membership_type(label), staff!payment_staff_id_fkey(username)",
+        "id, amount_rsd, kind, is_custom_price, custom_reason, voided, paid_at, business_date, membership_id, membership_type(label), staff!payment_staff_id_fkey(username)",
       )
       .eq("member_id", id)
       .order("paid_at", { ascending: false })
@@ -134,6 +131,15 @@ export default async function MemberCardPage({
   const activeType = (activeMembership?.membership_type ?? null) as unknown as MembershipTypeShape | null;
   const statusType = (statusBasis?.membership_type ?? null) as unknown as MembershipTypeShape | null;
   const payments = paymentsRes.data ?? [];
+  // "Datum uplate" tekuće članarine: poslednja važeća uplata vezana za nju
+  // (payment.membership_id); fallback na membership.created_at jer record_payment
+  // kreira membership red u trenutku uplate.
+  const membershipPaymentDate =
+    (payments.find(
+      (p) => p.membership_id === activeMembership?.id && !p.voided,
+    )?.business_date ??
+      activeMembership?.created_at ??
+      null) as string | null;
   const sessions = sessionsRes.data ?? [];
   const reserved = reservedRes.data ?? [];
   const unsettledCount = reserved.filter((r) => !r.settled).length;
@@ -244,6 +250,10 @@ export default async function MemberCardPage({
               <div>
                 <dt className="text-muted-foreground">Tip</dt>
                 <dd>{activeType?.label ?? "—"}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Datum uplate</dt>
+                <dd>{formatDate(membershipPaymentDate)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Status</dt>

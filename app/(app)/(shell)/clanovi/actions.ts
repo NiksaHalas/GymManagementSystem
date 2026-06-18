@@ -12,6 +12,8 @@ const MEMBERS_PAGE_SIZE = 50;
 
 const PHONE_TAKEN_ERROR = "Broj telefona već postoji kod drugog člana.";
 const RESTORE_ADMIN_ONLY_ERROR = "Samo administrator može vratiti člana iz arhive.";
+const ARCHIVE_DEBT_ERROR =
+  "Član ima neizmirene rezervisane (dužne) termine. Izmirite ih pre arhiviranja.";
 
 /** Maps DB constraint/trigger violations to readable messages; otherwise the raw error. */
 function mapMemberWriteError(error: { code?: string; message: string }): string {
@@ -20,6 +22,9 @@ function mapMemberWriteError(error: { code?: string; message: string }): string 
   }
   if (error.code === "42501") {
     return RESTORE_ADMIN_ONLY_ERROR;
+  }
+  if (error.code === "23514" && error.message.includes("rezervisane")) {
+    return ARCHIVE_DEBT_ERROR;
   }
   return error.message;
 }
@@ -196,7 +201,7 @@ export async function archiveMember(id: string): Promise<ActionResult> {
     })
     .eq("id", id);
 
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: mapMemberWriteError(error) };
 
   revalidatePath("/clanovi");
   revalidatePath(`/clanovi/${id}`);
