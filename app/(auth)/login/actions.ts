@@ -7,7 +7,10 @@ import { createClient } from "@/utils/supabase/server";
 import { createAdminClient } from "@/utils/supabase/admin";
 import { normalizeUsername, usernameToEmail } from "@/lib/auth/username";
 
+/** Per (username + IP): blocks a single guessing source. */
 const MAX_ATTEMPTS = 5;
+/** Per username across all IPs: defeats IP rotation (higher threshold). */
+const MAX_ATTEMPTS_USERNAME = 20;
 /** Lockout window in seconds */
 const LOCKOUT_WINDOW_SECONDS = 15 * 60;
 
@@ -23,25 +26,28 @@ export type LoginActionResult = {
 };
 
 /**
- * Derive a rate-limit key from the username + client IP.
+ * Derive the two rate-limit keys for a login attempt:
+ * - ipKey (`login:<username>:<ip>`) blocks a single guessing source (5/15min).
+ * - usernameKey (`login-uname:<username>`) blocks distributed guessing against one
+ *   account regardless of IP (20/15min), defeating IP rotation.
  * IP is extracted from the forwarded header (works on Vercel/proxied setups).
  */
-async function getRateLimitKey(username: string): Promise<string> {
+async function getRateLimitKeys(
+  username: string,
+): Promise<{ ipKey: string; usernameKey: string }> {
   const h = await headers();
   const ip =
     h.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     h.get("x-real-ip") ??
     "unknown";
-  return `login:${username}:${ip}`;
+  return { ipKey: `login:${username}:${ip}`, usernameKey: `login-uname:${username}` };
 }
 
 /**
- * Check and update login attempt count using Supabase (admin client, bypasses RLS).
- * We store attempt counters in a simple in-memory approach won't work serverlessly,
- * so we use Supabase DB: the `login_attempt` table (created below via migration).
- * Returns true if the account/IP is locked out.
+ * Returns the number of failed attempts for a key within the sliding window.
+ * Uses the admin client (bypasses RLS); attempts live in the `login_attempt` table.
  */
-async function checkRateLimit(key: string): Promise<boolean> {
+async function countAttempts(key: string): Promise<number> {
   const admin = createAdminClient();
 
   const windowStart = new Date(
@@ -54,19 +60,42 @@ async function checkRateLimit(key: string): Promise<boolean> {
     .eq("attempt_key", key)
     .gte("attempted_at", windowStart);
 
-  return (count ?? 0) >= MAX_ATTEMPTS;
+  return count ?? 0;
 }
 
-async function recordAttempt(key: string): Promise<void> {
+/** True if either the per-(username+IP) or the per-username threshold is exceeded. */
+async function isLockedOut(keys: {
+  ipKey: string;
+  usernameKey: string;
+}): Promise<boolean> {
+  const [ipCount, usernameCount] = await Promise.all([
+    countAttempts(keys.ipKey),
+    countAttempts(keys.usernameKey),
+  ]);
+  return ipCount >= MAX_ATTEMPTS || usernameCount >= MAX_ATTEMPTS_USERNAME;
+}
+
+async function recordAttempt(keys: {
+  ipKey: string;
+  usernameKey: string;
+}): Promise<void> {
+  const admin = createAdminClient();
+  const attempted_at = new Date().toISOString();
+  await admin.from("login_attempt").insert([
+    { attempt_key: keys.ipKey, attempted_at },
+    { attempt_key: keys.usernameKey, attempted_at },
+  ]);
+}
+
+async function clearAttempts(keys: {
+  ipKey: string;
+  usernameKey: string;
+}): Promise<void> {
   const admin = createAdminClient();
   await admin
     .from("login_attempt")
-    .insert({ attempt_key: key, attempted_at: new Date().toISOString() });
-}
-
-async function clearAttempts(key: string): Promise<void> {
-  const admin = createAdminClient();
-  await admin.from("login_attempt").delete().eq("attempt_key", key);
+    .delete()
+    .in("attempt_key", [keys.ipKey, keys.usernameKey]);
 }
 
 export async function signInAction(
@@ -87,8 +116,8 @@ export async function signInAction(
   const username = normalizeUsername(rawUsername);
   const email = usernameToEmail(username);
 
-  const rateLimitKey = await getRateLimitKey(username);
-  const locked = await checkRateLimit(rateLimitKey);
+  const rateLimitKeys = await getRateLimitKeys(username);
+  const locked = await isLockedOut(rateLimitKeys);
   if (locked) {
     return {
       error: `Previše neuspešnih pokušaja. Sačekajte ${LOCKOUT_WINDOW_SECONDS / 60} minuta.`,
@@ -104,7 +133,7 @@ export async function signInAction(
   });
 
   if (error || !data.user) {
-    await recordAttempt(rateLimitKey);
+    await recordAttempt(rateLimitKeys);
     return { error: "Neispravno korisničko ime ili lozinka." };
   }
 
@@ -121,7 +150,7 @@ export async function signInAction(
   }
 
   // Clear failed attempts on successful login
-  await clearAttempts(rateLimitKey);
+  await clearAttempts(rateLimitKeys);
 
   const destination = callbackUrl && callbackUrl.startsWith("/") ? callbackUrl : "/";
   redirect(destination);

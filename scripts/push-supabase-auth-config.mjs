@@ -65,8 +65,10 @@ async function main() {
     process.exit(1);
   }
 
+  // Prefer an inline env var (the documented deploy usage) over .env.local, which
+  // typically holds a dev localhost URL. Consistent with how the token is resolved.
   const siteUrl =
-    env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+    process.env.NEXT_PUBLIC_SITE_URL ?? env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
   // Guard: never let a dev .env.local silently push a localhost site_url to the
   // remote project — that breaks password-reset / magic-link emails for real
@@ -101,6 +103,11 @@ async function main() {
   const current = await getRes.json();
   const uri_allow_list = mergeRedirectUrls(current.uri_allow_list, siteUrl);
 
+  // Leaked-password protection (HaveIBeenPwned) requires a Supabase Pro plan.
+  // Off by default so the free plan doesn't 402; opt in once upgraded:
+  //   ENABLE_HIBP=true npm run auth:push-config
+  const enableHibp = process.env.ENABLE_HIBP === "true";
+
   const patchRes = await fetch(
     `https://api.supabase.com/v1/projects/${PROJECT_REF}/config/auth`,
     {
@@ -110,6 +117,15 @@ async function main() {
         site_url: siteUrl.replace(/\/$/, ""),
         uri_allow_list,
         mailer_otp_exp: 3600,
+        // Security hardening (see plan P1/P2):
+        // - disable public signup so synthetic *@gym.local accounts can only be
+        //   created via the service-role admin channel (defense in depth alongside
+        //   the handle_new_user trigger that no longer trusts metadata role).
+        // - enforce password policy server-side (the /reset flow runs updateUser
+        //   from the browser, so client-side zod alone is not authoritative).
+        disable_signup: true,
+        password_min_length: 8,
+        ...(enableHibp ? { password_hibp_enabled: true } : {}),
       }),
     },
   );
@@ -123,6 +139,13 @@ async function main() {
   console.log("   site_url:", siteUrl.replace(/\/$/, ""));
   console.log("   mailer_otp_exp: 3600");
   console.log("   uri_allow_list includes /auth/callback and /reset");
+  console.log("   disable_signup: true");
+  console.log("   password_min_length: 8");
+  console.log(
+    enableHibp
+      ? "   password_hibp_enabled: true"
+      : "   password_hibp_enabled: skipped (set ENABLE_HIBP=true on Pro plan)",
+  );
 }
 
 main().catch((err) => {

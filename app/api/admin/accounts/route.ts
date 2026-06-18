@@ -82,13 +82,16 @@ export async function POST(req: NextRequest) {
     const username = normalizeUsername(rawUsername);
     const email = usernameToEmail(username);
 
+    // Role is NEVER passed via user_metadata — the handle_new_user trigger always
+    // creates a 'user' row. Admin role is granted below via an explicit service-role
+    // update (server-authoritative channel), so client-suppliable metadata can never
+    // escalate privileges even if public signup is enabled.
     const { data, error } = await admin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
       user_metadata: {
         username,
-        role,
         recovery_email: recovery_email || null,
       },
     });
@@ -98,6 +101,21 @@ export async function POST(req: NextRequest) {
         ? "Korisničko ime već postoji."
         : error.message;
       return NextResponse.json({ error: msg }, { status: 400 });
+    }
+
+    // Grant admin role explicitly (trigger created the row as 'user').
+    if (role === "admin") {
+      const { error: roleError } = await admin
+        .from("staff")
+        .update({ role: "admin", updated_at: new Date().toISOString() })
+        .eq("id", data.user.id);
+
+      if (roleError) {
+        return NextResponse.json(
+          { error: `Nalog je kreiran, ali dodela admin uloge nije uspela: ${roleError.message}` },
+          { status: 500 },
+        );
+      }
     }
 
     return NextResponse.json({ ok: true, id: data.user.id });

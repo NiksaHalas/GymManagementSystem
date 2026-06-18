@@ -56,22 +56,34 @@ const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 });
 
 /**
- * Define your initial admin accounts here.
- * Change usernames/passwords/emails before running.
- * DO NOT commit real passwords to git.
+ * Initial admin accounts. Passwords and recovery emails are read from env so they
+ * are NEVER committed to git (a public repo with default passwords = live admin
+ * accounts anyone can log into). Set these before running, e.g. in .env.local:
+ *   SEED_ADMIN1_USERNAME, SEED_ADMIN1_PASSWORD, SEED_ADMIN1_EMAIL
+ *   SEED_ADMIN2_USERNAME, SEED_ADMIN2_PASSWORD, SEED_ADMIN2_EMAIL
  */
 const INITIAL_ADMINS = [
   {
-    username: "admin1",
-    password: "ChangeMe123!",
-    recovery_email: "admin1@example.com",
+    username: process.env.SEED_ADMIN1_USERNAME ?? "admin1",
+    password: process.env.SEED_ADMIN1_PASSWORD,
+    recovery_email: process.env.SEED_ADMIN1_EMAIL,
   },
   {
-    username: "admin2",
-    password: "ChangeMe456!",
-    recovery_email: "admin2@example.com",
+    username: process.env.SEED_ADMIN2_USERNAME ?? "admin2",
+    password: process.env.SEED_ADMIN2_PASSWORD,
+    recovery_email: process.env.SEED_ADMIN2_EMAIL,
   },
 ];
+
+// Fail fast if any password is missing — never fall back to a hardcoded default.
+const missing = INITIAL_ADMINS.filter((a) => !a.password || a.password.length < 8);
+if (missing.length > 0) {
+  console.error(
+    "❌  Missing/short admin password(s). Set SEED_ADMIN1_PASSWORD and SEED_ADMIN2_PASSWORD " +
+      "(min 8 chars) in the environment before running. Defaults are intentionally not provided.",
+  );
+  process.exit(1);
+}
 
 async function seedAdmin({ username, password, recovery_email }) {
   const email = `${username}@gym.local`;
@@ -87,19 +99,32 @@ async function seedAdmin({ username, password, recovery_email }) {
     return;
   }
 
+  // Role is NOT set via metadata (handle_new_user always creates 'user');
+  // we grant admin explicitly below via a service-role update.
   const { data, error } = await admin.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
     user_metadata: {
       username,
-      role: "admin",
       recovery_email,
     },
   });
 
   if (error) {
     console.error(`  ❌  Failed to create "${username}": ${error.message}`);
+    return;
+  }
+
+  const { error: roleError } = await admin
+    .from("staff")
+    .update({ role: "admin", updated_at: new Date().toISOString() })
+    .eq("id", data.user.id);
+
+  if (roleError) {
+    console.error(
+      `  ❌  Created "${username}" but failed to grant admin role: ${roleError.message}`,
+    );
     return;
   }
 
