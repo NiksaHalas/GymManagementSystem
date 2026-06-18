@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.8
+Version: 1.9
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -12,6 +12,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.5 adds **Pazar / payment MVP**: `membership_status` value `zakazana` (pre-paid queued renewal), RPCs `record_payment`, `void_payment`, `offered_membership_price`, `promote_memberships()` + daily `pg_cron` job, and group Fitpass +300 RSD charged atomically in `create_checkin`. Migrations: `20260617100000_add_membership_status_zakazana`, `20260617100100_payment_rpcs`, `20260617100200_payment_pgcron`, `20260617100300_group_fitpass_surcharge`, `20260617100400_fix_payment_rpcs_reserved_session_columns`.
 > v1.6 adds **shift lifecycle RPCs** `ensure_open_shift()` and `end_shift()` (migration `20260617100500_shift_rpcs`) and **login attempt cleanup** cron (migration `20260617100600_login_attempt_cleanup`).
 > v1.7 adds **shift attribution**: `shift_id` + `waived_*` on `checkin`/`payment`, `shift_one_open_uidx`, pending partial indexes on `created_at`, RPCs `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; drops `ensure_open_shift()`. Migration: `20260617100700_shift_attribution`.
+> v1.9 — **Phase 0 security hardening** (2026-06-18). Migrations `20260618120000`–`20260618120200`: (1) `handle_new_user` no longer reads `role` from client-suppliable `raw_user_meta_data` — always seeds `'user'`; admin role is granted via a server-authoritative service-role update (see §3.1, `Tech.md` §3.3). (2) `open_or_resume_shift()` switched INVOKER → **`SECURITY DEFINER`** and the `shift_select_open` RLS policy dropped, so non-admin workers have no SELECT on `shift` (least privilege; §3.2, §12.1). (3) `EXECUTE` on the `rls_auto_enable()` event-trigger function revoked from `anon`/`authenticated`/`public` (Supabase advisor 0028/0029). Auth GoTrue config also hardened (`disable_signup`, `password_min_length=8`; leaked-password/HIBP pending Pro plan) — `Tech.md` §3/§10.
 > v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
@@ -92,7 +93,7 @@ create index staff_active_idx on staff (active) where active;
 - `username` is unique; login maps `username → <username>@gym.local` synthetic email for Supabase Auth.
 - Minimum-2-Admins is an operational guideline (not DB-enforced), per product decision.
 
-**Auto-provisioning of `staff` (refinement v1.1):** a trigger on `auth.users` creates the linked `staff` row on user creation, deriving `username` / `role` / `recovery_email` from the auth metadata (falling back to the email local-part for `username`). This lets accounts created later (Dashboard, app, or a seed script) link automatically.
+**Auto-provisioning of `staff` (refinement v1.1; hardened v1.9):** a trigger on `auth.users` creates the linked `staff` row on user creation, deriving `username` / `recovery_email` from the auth metadata (falling back to the email local-part for `username`). **`role` is NEVER read from metadata** — it is always seeded as `'user'`, because `raw_user_meta_data` is client-suppliable and must not drive an authorization decision (would allow privilege escalation at signup). Admin role is granted only via a server-authoritative service-role `update staff set role='admin'` after `createUser` (see `Tech.md` §3.3). This lets accounts created later (Dashboard, app, or a seed script) link automatically.
 ```sql
 create or replace function handle_new_user()
 returns trigger language plpgsql
@@ -102,7 +103,7 @@ begin
   values (
     new.id,
     coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
-    coalesce((new.raw_user_meta_data->>'role')::staff_role, 'user'),
+    'user',  -- role is never taken from client-suppliable metadata (migration 20260618120000)
     new.raw_user_meta_data->>'recovery_email'
   )
   on conflict (id) do nothing;
@@ -136,7 +137,7 @@ create unique index shift_one_open_uidx on shift ((true)) where ended_at is null
 - A `pg_cron` job auto-closes stale open shifts (`auto_close`) at the gym's closing time + 20 min — see §8.
 - Admin **remote view-only** logins do not create a shift (the device is not the registered counter — see `Tech.md` §3/§5).
 - **Shift lifecycle (implemented):** opens automatically on counter login; a worker may **end** it manually (`ended_reason = 'logout'`); plain **sign-out does NOT close** the shift (it stays open until ended, handed over, or auto-closed).
-- **Counter workers** use RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, **`end_shift()`** (migration `20260617100700_shift_attribution`; see §12). Active staff may SELECT the open shift via RLS policy `shift_select_open`; admins see all shifts via `shift_select`.
+- **Counter workers** use RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, **`end_shift()`** (migration `20260617100700_shift_attribution`; see §12). All three run **`SECURITY DEFINER`** (v1.9), so non-admin workers have **no SELECT on `shift`**; only admins read shifts via `shift_select`. (The earlier `shift_select_open` policy was dropped in migration `20260618120100`.)
 
 ### 3.3 `member`
 The virtual card. Soft-deletable; permanent member number.
@@ -784,7 +785,7 @@ Migration `20260617100700_shift_attribution` (replaces `20260617100500` handover
 Counter-device binding (`gym_counter` cookie) is enforced in the app layer (`lib/shifts/actions.ts`), not inside these RPCs.
 
 ### 12.1 `open_or_resume_shift() → text`
-**SECURITY INVOKER.** Returns `'opened' | 'resumed' | 'foreign_shift_open'`.
+**SECURITY DEFINER** (migration `20260618120100`; was INVOKER + `shift_select_open` policy until v1.9). Returns `'opened' | 'resumed' | 'foreign_shift_open'`.
 
 | State | Action |
 |---|---|

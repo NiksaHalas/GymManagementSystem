@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.6
+Version: 1.7
 Date: 2026-06-18
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -12,6 +12,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.4 records **Phase 0 auth/shift hardening**: shift lifecycle via Postgres RPCs `ensure_open_shift()` / `end_shift()` (`DB.md` §12); counter hard-fail guards in `lib/shifts/actions.ts`; password reset SSR callback (`app/auth/callback/route.ts` — `verifyOtp` + `token_hash`, not implicit `action_link`); middleware `GUEST_ONLY` vs public auth paths; `login_attempt` pg_cron cleanup (`DB.md` §8.3). Migrations `20260617100500`, `20260617100600`.
 > v1.5 records **Phase 0 shift attribution (fail-open)**: `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; `shift_id` + waive on `checkin`/`payment`; counter banner + admin reconcile (`?unassigned=1`); deploy runbook `npm run auth:push-config`. Migration `20260617100700_shift_attribution`.
 > v1.6 records the **first production deployment** (Vercel project `gym-management-system` → `https://gym-management-system-five-ashy.vercel.app`, Supabase `qkmrssvfeljfkqbbxfpr`) and the **migration-ledger reconcile** (MCP-applied versions re-aligned to repo files via `db reset` + `migration repair`). Adds the localhost guard in `push-supabase-auth-config.mjs`, `vercel.json` `fra1` region, the `supabase` CLI devDependency, and the **deployment incidents & lessons** in §9. Phase 0 smoke (auth reset, shift attribution, admin reconcile) verified live on 2026-06-18.
+> v1.7 records **Phase 0 security hardening** (2026-06-18, applied live): (1) `handle_new_user` no longer trusts client-suppliable `role` metadata — admin role granted via explicit service-role update in `accounts/route.ts` + `seed-admins.mjs` (§3.3); (2) Auth config `disable_signup` + `password_min_length=8` pushed via `push-supabase-auth-config.mjs` (leaked-password/HIBP gated behind `ENABLE_HIBP` — Pro plan; §10), and `site_url` precedence fixed to prefer the inline env var; (3) `open_or_resume_shift()` → `SECURITY DEFINER`, `shift_select_open` policy dropped (§5; `DB.md` §12.1); (4) login rate-limit gains a per-username global cap alongside username+IP (§3.1); (5) `rls_auto_enable()` RPC execute revoked. New helper `scripts/set-admin-password.mjs` for service-role password rotation. Schema deltas in `DB.md` v1.9 (migrations `20260618120000`–`20260618120200`).
 
 ---
 
@@ -237,7 +238,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 ### 3.1 Username + password (no public email)
 - Supabase Auth requires an email identity, so each worker maps to a **synthetic internal email**: `"<username>@gym.local"` (domain is internal, never sent mail). Helpers in `lib/auth/username.ts` normalize (trim + lowercase), validate (letters/digits/`._-`, min 3), and map `username → email`.
 - Login flow (`app/(auth)/login/actions.ts`): the UI takes `username` + `password`, the server maps `username → synthetic email`, calls `supabase.auth.signInWithPassword`, then checks `staff.active` (disabled accounts are signed back out and rejected).
-- **Rate limiting:** failed attempts are recorded in the `login_attempt` table keyed by `username + IP`; **≥ 5 fails in 15 min** blocks further attempts until the window passes. Successful login clears the key. (Uses the service-role client; see `DB.md` §3.13.)
+- **Rate limiting:** failed attempts are recorded in the `login_attempt` table under **two keys** — per `username + IP` (**≥ 5 fails / 15 min**) and per `username` across all IPs (**≥ 20 fails / 15 min**, defeats IP rotation). Login is blocked if **either** threshold is hit; a successful login clears both keys. (Uses the service-role client; see `DB.md` §3.13.)
 - A `staff` profile row (see `DB.md`) is linked 1:1 to `auth.users.id` and stores `username`, `role`, `recovery_email`, and `active`.
 
 ### 3.2 Password reset (Resend)
@@ -257,7 +258,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
   - **`PUBLIC_PATHS`** — `/login`, `/zaboravljena-lozinka`, `/reset`, `/auth/callback`: reachable without a session.
   - **`GUEST_ONLY_AUTH_PATHS`** — `/login`, `/zaboravljena-lozinka` only: authenticated users are redirected to `/`.
   - **`/reset`** and **`/auth/callback`** stay accessible during password recovery (a recovery session must not be redirected away before the new password is set).
-- **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes `username`/`role`/`recovery_email` as metadata so the `handle_new_user` trigger links the `staff` row.
+- **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes only `username`/`recovery_email` as metadata (the `handle_new_user` trigger links the `staff` row as `'user'`). **Role is never trusted from client-suppliable metadata** — when creating an admin, the route runs an explicit service-role `update staff set role='admin'` after `createUser` (same pattern in `scripts/seed-admins.mjs`). Public signup is disabled in Auth config so synthetic `@gym.local` accounts can only originate from this service-role channel. See `DB.md` §3.1.
 
 ### 3.4 Counter device vs. remote (view-only) — device binding
 - Whether a login is a **counter session** (opens a shift) or a **remote view-only** session (no shift) is decided by **device binding**, not by which URL was used (URLs are convention-only and can be misused).
@@ -290,7 +291,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/` and delegates mutations to Postgres RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, and **`end_shift()`** (`DB.md` §12; migration `20260617100700_shift_attribution`). **`ensure_open_shift()` is removed** — no auto-handover on login.
 - **Atribucija:** `checkin` and `payment` rows store `staff_id = auth.uid()` always; nullable `shift_id` (assigned when caller has an open shift); `waived_at` / `waived_by` for admin-resolved gaps. Pending badge: `shift_id IS NULL AND waived_at IS NULL AND created_at >= SHIFT_ATTRIBUTION_LAUNCH_AT` (default = migration launch; see `lib/shifts/config.ts`).
 - **Counter layout (fail-open):** `(app)/layout` calls `openOrResumeShift()` with transient retry. Returns `opened`/`resumed` → OK; `foreign_shift_open` → `ShiftAttributionBanner` + CTA **Preuzmi smenu** (`handover_shift()`); permanent errors also show banner. Check-in/payment still work with `shift_id NULL`.
-- **Open / resume:** `open_or_resume_shift()` (**INVOKER**) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally.
+- **Open / resume:** `open_or_resume_shift()` (**SECURITY DEFINER** since v1.7 hardening; was INVOKER) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally. DEFINER means non-admin workers need **no SELECT on `shift`** (the `shift_select_open` RLS policy was dropped — `DB.md` §12.1).
 - **Handover:** `handoverShiftAction()` / `switchWorkerAction()` call **`handover_shift()`** (**DEFINER**, `FOR UPDATE`) — atomic close (`switch`) + open. Switch worker still requires password sign-in first.
 - **End shift (manual):** `endShiftAction()` → INVOKER `end_shift()` (`ended_reason = 'logout'`); worker **stays signed in**.
 - **Sign-out ≠ end shift:** plain logout only clears the auth session.
