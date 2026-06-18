@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.8
+Version: 1.9
 Date: 2026-06-18
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -12,6 +12,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.6 notes **Phase 0 live in production** (deployed 2026-06-18): login, worker password reset (email link confirmed to point to the production site, not a dev address), shift tracking, and the Admin reconcile of un-attributed check-ins/payments were all verified end-to-end on the live site. Technical deployment notes — and an explanation of the deployment issues that were fixed along the way — are in `Tech.md` §9; the migration-history reconcile is in `DB.md` v1.8.
 > v1.7 records **Phase 1a Members fixes**: phone is now **unique across all members** (incl. archived) — the old "family sharing / soft duplicate warning" rule is dropped in favour of a hard, database-enforced block with a readable message (§3.3, §8); the member card and members list now show **"Istekla"** for expired memberships and add a **"Istorija članarina"** history section. See `DB.md` v1.10 / `Tech.md` v1.8.
 > v1.8 records **Phase 1a Members review closure**: restore (unarchive) is **Admin-only and DB-enforced** via a `BEFORE UPDATE` trigger (§3.3); **custom price** is intentionally shown only in payment history (per-payment `is_custom_price`/`custom_reason`), not as a separate card field (§3.3). See `DB.md` v1.11 / `Tech.md` v1.9.
+> v1.9 records **Phase 0 alignment live in production** (deployed 2026-06-18): access gate for workers off-counter (`/samo-salter`), logout open-shift prompt on counter devices, and **last-active-admin guard** — the system hard-blocks disabling or demoting the sole remaining active Admin (API 400 + disabled UI). Operational minimum of 2 Admins is partially enforced; provisioning a second Admin remains an operational responsibility. See `Tech.md` v1.10 / `DB.md` v1.12.
 
 ---
 
@@ -52,7 +53,7 @@ An internal web application for running a single gym (family business) that repl
 | Export reports | No | **Yes (Admin only)** |
 
 Notes:
-- There is a **minimum of 2 Admins**; only Admins manage worker accounts. *(The system does **not** hard-block dropping below 2 Admins — it is an operational guideline.)*
+- There is a **minimum of 2 Admins**; only Admins manage worker accounts. **The system hard-blocks disabling or demoting the last remaining active Admin** (API 400 + disabled UI controls); keeping at least two active Admins provisioned remains an operational responsibility.
 - Login is via **username + password** (no public email login).
 - **Trainers are the workers themselves** — any active worker/Admin account can be selected as the trainer for a session.
 - **Admin remote access**: an Admin may log in from home to view daily activity. This remote session is **view-only (overview)** and **does not create a shift**, and is exempt from the single-counter-session rule.
@@ -67,7 +68,7 @@ Notes:
 - Password policy: **minimum 8 characters**, no other rules.
 - **Disabled accounts cannot log in**; after several failed attempts in a row login is **temporarily locked** to deter guessing.
 - **Password reset**: self-service via **email**. Each worker account has a **recovery email** (set by an Admin). The worker requests a reset by username (or an Admin triggers it); a reset link valid for **1 hour** is emailed to that address.
-- Account management (Admin only): create worker (**Admin sets the password directly**; the worker does not have to change it on first login), disable/enable worker, reset password, set/update recovery email, set role.
+- Account management (Admin only): create worker (**Admin sets the password directly**; the worker does not have to change it on first login), disable/enable worker, reset password, set/update recovery email, set role. **Cannot disable or demote the last active Admin.**
 - **Counter vs. remote**: the front-desk computer is registered once as "the counter" ("šalter"); only logins on that device create a worker **shift**. An Admin logging in from any other device gets the **view-only overview** with no shift (see §2).
 
 ### 3.2 Main Dashboard (daily check-in)
@@ -288,7 +289,7 @@ Rules:
 ---
 
 ## 8. Confirmed decisions log
-- Login: username + password (case-insensitive); min. 2 Admins manage accounts (no hard enforcement of the minimum). Disabled accounts cannot log in; basic lockout after repeated failed attempts (≥5 in 15 min).
+- Login: username + password (case-insensitive); min. 2 Admins — **last active Admin cannot be disabled or demoted**. Disabled accounts cannot log in; basic lockout after repeated failed attempts (≥5 in 15 min).
 - Password reset: self-service (or Admin-initiated) via email, using a per-worker recovery email set by an Admin; reset link valid 1 hour.
 - Password policy: minimum 8 characters. Admin creating a worker sets the password directly; no forced change on first login.
 - One counter device, identified by **device registration** ("set as counter"); only counter logins create shifts. Admin may log in remotely **view-only** (no shift created).
@@ -321,7 +322,7 @@ This section tracks delivery against the requirements above. Technical detail li
 ### 9.1 Done
 | Area | Scope |
 |---|---|
-| **Auth & shell** | Login, password reset (recovery email → link → set new password), accounts, counter-device cookie, shift lifecycle (auto-open, handover, manual end, auto-close safety net), sidebar nav |
+| **Auth & shell** | Login, password reset (recovery email → link → set new password), accounts (incl. last-active-admin guard), counter-device cookie + `/samo-salter` access gate, shift lifecycle (auto-open, handover, manual end, logout open-shift prompt, auto-close safety net), sidebar nav |
 | **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
 | **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
 | **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |

@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.9
+Version: 1.10
 Date: 2026-06-18
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -15,6 +15,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.7 records **Phase 0 security hardening** (2026-06-18, applied live): (1) `handle_new_user` no longer trusts client-suppliable `role` metadata — admin role granted via explicit service-role update in `accounts/route.ts` + `seed-admins.mjs` (§3.3); (2) Auth config `disable_signup` + `password_min_length=8` pushed via `push-supabase-auth-config.mjs` (leaked-password/HIBP gated behind `ENABLE_HIBP` — Pro plan; §10), and `site_url` precedence fixed to prefer the inline env var; (3) `open_or_resume_shift()` → `SECURITY DEFINER`, `shift_select_open` policy dropped (§5; `DB.md` §12.1); (4) login rate-limit gains a per-username global cap alongside username+IP (§3.1); (5) `rls_auto_enable()` RPC execute revoked. New helper `scripts/set-admin-password.mjs` for service-role password rotation. Schema deltas in `DB.md` v1.9 (migrations `20260618120000`–`20260618120200`).
 > v1.8 records **Phase 1a Members fixes** (2026-06-18): phone is now **unique** (DB constraint `member_phone_digits_uidx`; the duplicate-phone soft warning and `checkPhoneDuplicate` server action are removed, the `23505` violation mapped to a friendly error in `clanovi/actions.ts`); the member card adds an **"Istorija članarina"** section and shows **"Istekla"** for an expired latest membership; the members list shows "Istekla" too via the recreated `search_members` (§7). Schema deltas in `DB.md` v1.10 (migrations `20260618130000`–`20260618131000`, applied via `supabase db push`).
 > v1.9 records **Phase 1a Members review closure** (2026-06-18): **restore (unarchive) is DB-enforced** via `member_restore_admin_guard` / `enforce_member_restore_admin()` (`DB.md` §3.3, §5.1); app `requireAdmin()` on `restoreMember` remains defense-in-depth. Custom price is per-payment and intentionally shown only in payment history, not as a card field (PRD §3.3). Migration `20260618132000`, applied via `supabase db push`.
+> v1.10 records **Phase 0 alignment production deploy** (2026-06-18, commit `c0fd532` on `main`): (1) shell routes under `app/(app)/(shell)/` with access gate — workers off-counter redirect to `/samo-salter` (no sidebar); (2) generic auth error for wrong password **and** disabled accounts (`GENERIC_AUTH_ERROR`); (3) shared rate limiting in `lib/auth/rate-limit.ts` for login, forgot-password, and switch-worker flows; (4) **last-active-admin guard** in `app/api/admin/accounts/route.ts` + disabled controls in `accounts-table.tsx` (disable / demote blocked when ≤1 active admin); (5) counter logout prompts **Završi smenu** when `has_open_shift()` is true (`hasOpenShiftAction()` → `DB.md` §12.3a, migration `20260618140000`); (6) admin account creation requires recovery email. Deploy: `git push origin main` → Vercel auto-deploy; `supabase db push` was a **no-op** (ledger already 1:1, 31/31 applied). Smoke verified live — §9.2. **Never** use MCP `apply_migration` for remote schema (§9).
 
 ---
 
@@ -264,7 +265,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
   - **`PUBLIC_PATHS`** — `/login`, `/zaboravljena-lozinka`, `/reset`, `/auth/callback`: reachable without a session.
   - **`GUEST_ONLY_AUTH_PATHS`** — `/login`, `/zaboravljena-lozinka` only: authenticated users are redirected to `/`.
   - **`/reset`** and **`/auth/callback`** stay accessible during password recovery (a recovery session must not be redirected away before the new password is set).
-- **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes only `username`/`recovery_email` as metadata (the `handle_new_user` trigger links the `staff` row as `'user'`). **Role is never trusted from client-suppliable metadata** — when creating an admin, the route runs an explicit service-role `update staff set role='admin'` after `createUser` (same pattern in `scripts/seed-admins.mjs`). Public signup is disabled in Auth config so synthetic `@gym.local` accounts can only originate from this service-role channel. See `DB.md` §3.1.
+- **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/(shell)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes only `username`/`recovery_email` as metadata (the `handle_new_user` trigger links the `staff` row as `'user'`). **Role is never trusted from client-suppliable metadata** — when creating an admin, the route runs an explicit service-role `update staff set role='admin'` after `createUser` (same pattern in `scripts/seed-admins.mjs`). Public signup is disabled in Auth config so synthetic `@gym.local` accounts can only originate from this service-role channel. **Last-active-admin guard:** disable, demote (`set_role` → `user`), and admin creation without recovery email are rejected when the target is the sole remaining active admin (`countActiveAdmins() <= 1`); API returns **400** with *"Ne možete ukloniti poslednjeg aktivnog administratora."*; `accounts-table.tsx` disables the matching UI controls. See `DB.md` §3.1; PRD §2 / §3.1.
 
 ### 3.4 Counter device vs. remote — device binding
 - Whether a login opens a shift is decided by **device binding** (signed `gym_counter` cookie), not by URL.
@@ -407,6 +408,19 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 - [ ] `/dashboard?unassigned=1` and `/pazar?unassigned=1`: assign shift + waive
 - [ ] `npm run auth:push-config` with token (OTP 3600 + redirect URLs)
 
+#### Smoke test checklist (Phase 0 alignment) — ✅ verified live 2026-06-18
+
+Deploy handoff (`c0fd532` on `main`; `supabase db push` no-op; ledger 31/31 1:1):
+
+- [x] Wrong password → generic *"Neispravno korisničko ime ili lozinka."*
+- [x] Disabled account (correct password) → **same** generic message (no enumeration)
+- [x] Worker without `gym_counter` cookie → `/samo-salter`, no sidebar
+- [x] Admin remote (no counter) → dashboard overview, članovi, cene, nalozi, pazar + CSV; no check-in / `recordPayment`
+- [x] `has_open_shift()` RPC exists once; logout bundle includes **Završi smenu** / **Odjava** (counter UI — confirm manually in browser)
+- [x] Last-active-admin guard: 2 active admins; API/UI block on sole admin disable/demote
+- [x] Sidebar labels: Dashboard, Cene članarina, Dnevne uplate / Pazar
+- [x] `/smene` stub (expected, not a bug)
+
 ### Deployment incidents & lessons (first prod deploy, 2026-06-18)
 
 Four issues surfaced on the first real deploy. All are fixed; documented here so they don't recur.
@@ -452,7 +466,7 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done; **deployed to production 2026-06-18, smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts, counter-device binding, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9.
+- **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 (`/pazar`, §2.4).
 - **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct. *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge, payment void + membership revert, monthly/yearly takings + Admin export, shifts, remote admin overview — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

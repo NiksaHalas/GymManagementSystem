@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.11
+Version: 1.12
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -16,6 +16,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
 > v1.10 — **Phase 1a Members fixes** (2026-06-18). Migrations `20260618130000`–`20260618131000`: (1) `member_phone_digits_uidx` — a **functional unique index** on `regexp_replace(phone, '\D', '', 'g')` making phone unique by normalized digits, globally incl. archived (§3.3, §7); replaces the previous "NOT unique / family sharing" rule. App maps the `23505` violation to a readable message. (2) `search_members` recreated (same 4-arg signature/grants) so its `active_m` CTE also surfaces `istekla` memberships for the list status (§9). Applied via `supabase db push`.
 > v1.11 — **Phase 1a Members review closure** (2026-06-18). Migration `20260618132000`: **`member_restore_admin_guard`** trigger + **`enforce_member_restore_admin()`** — restore (`archived` true→false) allowed only when `is_admin()`; archiving (false→true) remains open to any authenticated worker. The `member_update` RLS policy stays `using (true) / with check (updated_by = auth.uid())` because RLS `WITH CHECK` cannot compare OLD vs NEW; the trigger is the authoritative guard (see §5.1, §3.3). Applied via `supabase db push`.
+> v1.12 — **no schema change.** Confirms **Phase 0 alignment production deploy** (2026-06-18): migration `20260618140000` (`has_open_shift`) applied on remote; `supabase db push` was a no-op (ledger already 1:1, 31/31). RPC documented in §12.3a. See `Tech.md` v1.10 / §9.2.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
