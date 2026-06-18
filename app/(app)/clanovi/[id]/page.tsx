@@ -93,9 +93,8 @@ export default async function MemberCardPage({
         "*, membership_type(label, package, is_time_based, training_category(label))",
       )
       .eq("member_id", id)
-      .in("status", ["aktivna", "pauzirana"])
-      .order("created_at", { ascending: false })
-      .limit(1),
+      .in("status", ["aktivna", "pauzirana", "istekla"])
+      .order("created_at", { ascending: false }),
     supabase
       .from("payment")
       .select(
@@ -118,22 +117,34 @@ export default async function MemberCardPage({
     fetchScheduledMemberships(id),
   ]);
 
-  const currentMembership = membershipRes.data?.[0] ?? null;
-  const membershipType = (currentMembership?.membership_type ?? null) as unknown as
-    | { label: string; package: string; is_time_based: boolean; training_category: { label: string } | null }
-    | null;
+  const memberships = membershipRes.data ?? [];
+  // "Trenutna članarina" sekcija: samo stvarno tekuća (aktivna/pauzirana).
+  const activeMembership =
+    memberships.find((m) => m.status === "aktivna" || m.status === "pauzirana") ?? null;
+  // Osnova SAMO za badge na vrhu kartice: tekuća, u suprotnom najnovija istekla -> "Istekla".
+  const statusBasis =
+    activeMembership ?? memberships.find((m) => m.status === "istekla") ?? null;
+  const membershipHistory = memberships.filter((m) => m.status === "istekla");
+  type MembershipTypeShape = {
+    label: string;
+    package: string;
+    is_time_based: boolean;
+    training_category: { label: string } | null;
+  };
+  const activeType = (activeMembership?.membership_type ?? null) as unknown as MembershipTypeShape | null;
+  const statusType = (statusBasis?.membership_type ?? null) as unknown as MembershipTypeShape | null;
   const payments = paymentsRes.data ?? [];
   const sessions = sessionsRes.data ?? [];
   const reserved = reservedRes.data ?? [];
   const unsettledCount = reserved.filter((r) => !r.settled).length;
 
   const status = getMemberStatus(
-    currentMembership
+    statusBasis
       ? {
-          status: currentMembership.status,
-          endDate: currentMembership.end_date,
-          sessionsLeft: currentMembership.sessions_left,
-          isTimeBased: membershipType?.is_time_based ?? null,
+          status: statusBasis.status,
+          endDate: statusBasis.end_date,
+          sessionsLeft: statusBasis.sessions_left,
+          isTimeBased: statusType?.is_time_based ?? null,
         }
       : null,
   );
@@ -228,11 +239,11 @@ export default async function MemberCardPage({
           <CardTitle>Trenutna članarina</CardTitle>
         </CardHeader>
         <CardContent>
-          {currentMembership ? (
+          {activeMembership ? (
             <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
               <div>
                 <dt className="text-muted-foreground">Tip</dt>
-                <dd>{membershipType?.label ?? "—"}</dd>
+                <dd>{activeType?.label ?? "—"}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Status</dt>
@@ -242,18 +253,18 @@ export default async function MemberCardPage({
               </div>
               <div>
                 <dt className="text-muted-foreground">Datum isteka</dt>
-                <dd>{formatDate(currentMembership.end_date)}</dd>
+                <dd>{formatDate(activeMembership.end_date)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Početak</dt>
-                <dd>{formatDate(currentMembership.start_date)}</dd>
+                <dd>{formatDate(activeMembership.start_date)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Preostali termini</dt>
                 <dd>
-                  {membershipType?.is_time_based
+                  {activeType?.is_time_based
                     ? "Neograničeno"
-                    : currentMembership.sessions_left ?? "—"}
+                    : activeMembership.sessions_left ?? "—"}
                 </dd>
               </div>
             </dl>
@@ -335,6 +346,44 @@ export default async function MemberCardPage({
                     </TableCell>
                   </TableRow>
                 ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Membership history (expired) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Istorija članarina</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {membershipHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nema ranijih članarina.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Tip</TableHead>
+                  <TableHead>Početak–Istek</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {membershipHistory.map((m) => {
+                  const mt = m.membership_type as unknown as { label: string } | null;
+                  return (
+                    <TableRow key={m.id}>
+                      <TableCell>{mt?.label ?? "—"}</TableCell>
+                      <TableCell>
+                        {formatDate(m.start_date)}–{formatDate(m.end_date)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="destructive">Istekla</Badge>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}

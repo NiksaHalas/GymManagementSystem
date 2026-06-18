@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.6
+Version: 1.7
 Date: 2026-06-18
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -10,6 +10,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.4 marks **Pazar MVP** (§9.1) as implemented: cash payment, debt settlement, void/revert, daily takings, Admin month/year + CSV export, group Fitpass +300, queued `zakazana` renewals.
 > v1.5 notes **Phase 0 auth/shift hardening** delivered in code (shift RPCs, password reset SSR callback, login-attempt cleanup) — see `Tech.md` v1.4 / `DB.md` v1.6.
 > v1.6 notes **Phase 0 live in production** (deployed 2026-06-18): login, worker password reset (email link confirmed to point to the production site, not a dev address), shift tracking, and the Admin reconcile of un-attributed check-ins/payments were all verified end-to-end on the live site. Technical deployment notes — and an explanation of the deployment issues that were fixed along the way — are in `Tech.md` §9; the migration-history reconcile is in `DB.md` v1.8.
+> v1.7 records **Phase 1a Members fixes**: phone is now **unique across all members** (incl. archived) — the old "family sharing / soft duplicate warning" rule is dropped in favour of a hard, database-enforced block with a readable message (§3.3, §8); the member card and members list now show **"Istekla"** for expired memberships and add a **"Istorija članarina"** history section. See `DB.md` v1.10 / `Tech.md` v1.8.
 
 ---
 
@@ -88,8 +89,8 @@ Notes:
 Card fields:
 - Member number (auto-incrementing, permanent, never reused).
 - First name, Last name.
-- Phone number (**required**). Phone is normally unique, but **family members may share one** — a **duplicate-phone warning** is shown rather than a hard block.
-- Current membership: type, payment date, start date, end date, remaining sessions (if a package), status (active / expired / paused / no membership).
+- Phone number (**required and unique across members**, including archived). Each member has their own number; entering a number already on file is **blocked with a readable message** ("Broj telefona već postoji kod drugog člana."). Uniqueness is by normalized digits (ignores spaces/dashes/`+`) and enforced in the database.
+- Current membership: type, payment date, start date, end date, remaining sessions (if a package), status (active / expired / paused / no membership). When the latest membership has expired, the card and the members list show **"Istekla"** (not "no membership"), and a **"Istorija članarina"** section lists past/expired memberships (type · start–end · status).
 - Discount flag (family / school) — yes/no. **Any worker can toggle it.**
 - Custom price — if one exists.
 - Comment (special needs).
@@ -308,7 +309,7 @@ Rules:
 - Takings: User daily; Admin daily/monthly/yearly; Admin-only export on demand.
 - Notifications visual only; "soon to expire" threshold 3 days.
 - Backup: automatic USB 3× daily + cloud copy.
-- Phone required; family sharing allowed with a duplicate warning (not a hard unique rule).
+- Phone required and **unique across all members** (incl. archived); duplicates are **blocked with a message**, enforced in the database by normalized digits. _(Supersedes the earlier "family sharing / soft warning" decision — Phase 1a, 2026-06-18.)_
 
 ---
 
