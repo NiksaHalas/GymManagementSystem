@@ -1,5 +1,4 @@
-import { cookies } from "next/headers";
-import { createClient } from "@/utils/supabase/server";
+import { getServerSupabase } from "@/lib/supabase/server-client";
 import { isCounterDevice } from "@/lib/auth/counter";
 import { AccountsTable } from "./accounts-table";
 import { CreateAccountDialog } from "./create-account-dialog";
@@ -8,8 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import type { Staff } from "@/lib/db/types";
 
 async function getAllStaff(): Promise<Staff[]> {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
+  const supabase = await getServerSupabase();
   const { data } = await supabase
     .from("staff")
     .select("*")

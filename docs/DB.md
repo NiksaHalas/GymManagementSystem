@@ -1,7 +1,7 @@
 # DB — Database Schema
 
-Version: 1.13
-Date: 2026-06-18
+Version: 1.14
+Date: 2026-06-19
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
@@ -18,6 +18,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.11 — **Phase 1a Members review closure** (2026-06-18). Migration `20260618132000`: **`member_restore_admin_guard`** trigger + **`enforce_member_restore_admin()`** — restore (`archived` true→false) allowed only when `is_admin()`; archiving (false→true) remains open to any authenticated worker. The `member_update` RLS policy stays `using (true) / with check (updated_by = auth.uid())` because RLS `WITH CHECK` cannot compare OLD vs NEW; the trigger is the authoritative guard (see §5.1, §3.3). Applied via `supabase db push`.
 > v1.12 — **no schema change.** Confirms **Phase 0 alignment production deploy** (2026-06-18): migration `20260618140000` (`has_open_shift`) applied on remote; `supabase db push` was a no-op (ledger already 1:1, 31/31). RPC documented in §12.3a. See `Tech.md` v1.10 / §9.2.
 > v1.13 — **Phase 1a Members review follow-ups** (2026-06-18). Migration `20260618184915` (`member_archive_no_debt_guard`): trigger **`member_archive_no_debt_guard`** + **`enforce_member_archive_no_debt()`** — archiving (`archived` false→true) is blocked while the member has any unsettled `reserved_session` (`settled = false`), raising SQLSTATE `23514` with a readable Serbian message (PRD §3.5; §3.3, §5.1). It is the authoritative DB backstop to the existing count-then-act pre-check in `clanovi/actions.ts` (closes a TOCTOU window). **Ledger note:** applied via MCP `apply_migration` (CLI `db push` was unavailable — project not linked locally), so the remote ledger stamped its execution timestamp `20260618184915`; the repo migration file was **renamed to that version** to keep the ledger 1:1 (same reconcile convention as v1.8). See `Tech.md` v1.12.
+> v1.14 — **no schema change.** Records **Phase 1b Cene review follow-ups** (2026-06-19): code-only cleanup on the prices feature — shared catalog sort helper, cached RSC client on `/cene` + `/nalozi`, removed unused catalog server actions/schemas, and readable Serbian errors for new-category slug collision / empty name. No tables, RPCs, or RLS touched. See `Tech.md` v1.13.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
