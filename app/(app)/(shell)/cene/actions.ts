@@ -7,16 +7,10 @@ import { requireAdmin } from "@/lib/auth/session";
 import {
   upsertPriceSchema,
   createMembershipTypeSchema,
-  updateMembershipTypeSchema,
   toggleMembershipTypeActiveSchema,
-  createTrainingCategorySchema,
-  updateTrainingCategorySchema,
   toggleTrainingCategoryActiveSchema,
   type UpsertPriceInput,
   type CreateMembershipTypeInput,
-  type UpdateMembershipTypeInput,
-  type CreateTrainingCategoryInput,
-  type UpdateTrainingCategoryInput,
 } from "@/lib/catalog/schema";
 import { slugifyCategoryCode } from "@/lib/catalog/format";
 
@@ -125,6 +119,22 @@ export async function createMembershipType(
   if (parsed.data.new_category) {
     const nc = parsed.data.new_category;
     const code = slugifyCategoryCode(nc.label);
+    if (code === "") {
+      return {
+        ok: false,
+        error: "Naziv kategorije mora sadržati slova ili brojeve.",
+      };
+    }
+
+    const { data: existingCat } = await supabase
+      .from("training_category")
+      .select("id")
+      .eq("code", code)
+      .maybeSingle();
+    if (existingCat) {
+      return { ok: false, error: "Kategorija sa ovim nazivom već postoji." };
+    }
+
     const { data: maxSort } = await supabase
       .from("training_category")
       .select("sort_order")
@@ -145,7 +155,13 @@ export async function createMembershipType(
       .select("id, code")
       .single();
 
-    if (catErr) return { ok: false, error: catErr.message };
+    if (catErr) {
+      // Backstop the pre-check against a concurrent insert (unique_violation).
+      if (catErr.code === "23505") {
+        return { ok: false, error: "Kategorija sa ovim nazivom već postoji." };
+      }
+      return { ok: false, error: catErr.message };
+    }
     categoryId = cat.id;
   }
 
@@ -200,30 +216,6 @@ export async function createMembershipType(
   return { ok: true };
 }
 
-export async function updateMembershipType(
-  input: UpdateMembershipTypeInput,
-): Promise<ActionOk | ActionError> {
-  await requireAdmin();
-  const parsed = updateMembershipTypeSchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message ?? "Neispravan unos." };
-  }
-
-  const supabase = await getClient();
-  const { error } = await supabase
-    .from("membership_type")
-    .update({
-      label: parsed.data.label,
-      is_time_based: parsed.data.is_time_based,
-      sessions: parsed.data.is_time_based ? null : parsed.data.sessions,
-    })
-    .eq("id", parsed.data.id);
-
-  if (error) return { ok: false, error: error.message };
-  revalidatePath("/cene");
-  return { ok: true };
-}
-
 export async function toggleMembershipTypeActive(input: {
   id: number;
   active: boolean;
@@ -238,64 +230,6 @@ export async function toggleMembershipTypeActive(input: {
   const { error } = await supabase
     .from("membership_type")
     .update({ active: parsed.data.active })
-    .eq("id", parsed.data.id);
-
-  if (error) return { ok: false, error: error.message };
-  revalidatePath("/cene");
-  return { ok: true };
-}
-
-export async function createTrainingCategory(
-  input: CreateTrainingCategoryInput,
-): Promise<ActionOk | ActionError> {
-  const staff = await requireAdmin();
-  const parsed = createTrainingCategorySchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message ?? "Neispravan unos." };
-  }
-
-  const supabase = await getClient();
-  const code = slugifyCategoryCode(parsed.data.label);
-  const { data: maxSort } = await supabase
-    .from("training_category")
-    .select("sort_order")
-    .order("sort_order", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const { error } = await supabase.from("training_category").insert({
-    code,
-    label: parsed.data.label,
-    is_trainer_based: parsed.data.is_trainer_based,
-    per_trainee: parsed.data.per_trainee,
-    sort_order: (maxSort?.sort_order ?? 0) + 1,
-    updated_by: staff.id,
-  });
-
-  if (error) return { ok: false, error: error.message };
-  revalidatePath("/cene");
-  return { ok: true };
-}
-
-export async function updateTrainingCategory(
-  input: UpdateTrainingCategoryInput,
-): Promise<ActionOk | ActionError> {
-  const staff = await requireAdmin();
-  const parsed = updateTrainingCategorySchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message ?? "Neispravan unos." };
-  }
-
-  const supabase = await getClient();
-  const { error } = await supabase
-    .from("training_category")
-    .update({
-      label: parsed.data.label,
-      is_trainer_based: parsed.data.is_trainer_based,
-      per_trainee: parsed.data.per_trainee,
-      updated_by: staff.id,
-      updated_at: new Date().toISOString(),
-    })
     .eq("id", parsed.data.id);
 
   if (error) return { ok: false, error: error.message };

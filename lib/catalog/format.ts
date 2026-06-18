@@ -17,7 +17,11 @@ export function formatPackageMeta(
   return `${sessionPart} | ${dayPart}`;
 }
 
-/** Slug for a new training category code from its label. */
+/**
+ * Slug for a new training category code from its label.
+ * Returns "" when the label has no alphanumeric content — the caller blocks
+ * creation with a readable message instead of inventing a placeholder code.
+ */
 export function slugifyCategoryCode(label: string): string {
   return label
     .toLowerCase()
@@ -26,5 +30,5 @@ export function slugifyCategoryCode(label: string): string {
     .replace(/đ/g, "dj")
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_|_$/g, "")
-    .slice(0, 40) || "kategorija";
+    .slice(0, 40);
 }

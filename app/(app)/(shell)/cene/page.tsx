@@ -1,6 +1,6 @@
-import { cookies } from "next/headers";
-import { createClient } from "@/utils/supabase/server";
+import { getServerSupabase } from "@/lib/supabase/server-client";
 import { requireUser } from "@/lib/auth/session";
+import { sortMembershipTypes } from "@/lib/catalog/sort";
 import type {
   CategoryWithTypes,
   TypeWithPrices,
@@ -42,17 +42,19 @@ function assembleCatalog(
   return categories
     .filter((c) => c.active || isAdmin)
     .map((cat) => {
-      const catTypes = types
-        .filter((t) => t.training_category_id === cat.id)
-        .filter((t) => t.active || isAdmin)
-        .map((t): TypeWithPrices => {
-          const pp = priceByType.get(t.id);
-          return {
-            ...t,
-            standard: pp?.standard ?? null,
-            discount: pp?.discount ?? null,
-          };
-        });
+      const catTypes = sortMembershipTypes(
+        types
+          .filter((t) => t.training_category_id === cat.id)
+          .filter((t) => t.active || isAdmin)
+          .map((t): TypeWithPrices => {
+            const pp = priceByType.get(t.id);
+            return {
+              ...t,
+              standard: pp?.standard ?? null,
+              discount: pp?.discount ?? null,
+            };
+          }),
+      );
 
       return { ...cat, types: catTypes };
     });
@@ -61,8 +63,7 @@ function assembleCatalog(
 export default async function CenePage() {
   const staff = await requireUser();
   const isAdmin = staff.role === "admin";
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
+  const supabase = await getServerSupabase();
 
   const [categoriesRes, typesRes, pricesRes] = await Promise.all([
     supabase

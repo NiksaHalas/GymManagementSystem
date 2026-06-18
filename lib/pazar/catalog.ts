@@ -7,6 +7,7 @@ import type {
   TrainingCategory,
 } from "@/lib/db/types";
 import type { CategoryWithTypes, TypeWithPrices } from "@/lib/catalog/types";
+import { sortMembershipTypes } from "@/lib/catalog/sort";
 import type { PaymentCatalog } from "@/lib/pazar/types";
 
 type PriceRow = Price;
@@ -43,9 +44,11 @@ function assembleCatalogCategoryWithTypes(
   return categories
     .filter((c) => c.active)
     .map((cat) => {
-      const catTypes = types
-        .filter((t) => t.training_category_id === cat.id && t.active)
-        .map((t) => toTypeWithPrices(t, priceByType.get(t.id) ?? { standard: null, discount: null }));
+      const catTypes = sortMembershipTypes(
+        types
+          .filter((t) => t.training_category_id === cat.id && t.active)
+          .map((t) => toTypeWithPrices(t, priceByType.get(t.id) ?? { standard: null, discount: null })),
+      );
 
       return { ...cat, types: catTypes };
     });

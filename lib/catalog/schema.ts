@@ -31,29 +31,9 @@ export const createMembershipTypeSchema = z
     { message: "Broj termina je obavezan za pakete po terminima.", path: ["sessions"] },
   );
 
-export const updateMembershipTypeSchema = z.object({
-  id: z.number().int().positive(),
-  label: z.string().min(1, "Unesite naziv."),
-  is_time_based: z.boolean(),
-  sessions: z.number().int().positive().nullable(),
-});
-
 export const toggleMembershipTypeActiveSchema = z.object({
   id: z.number().int().positive(),
   active: z.boolean(),
-});
-
-export const createTrainingCategorySchema = z.object({
-  label: z.string().min(1, "Unesite naziv kategorije."),
-  is_trainer_based: z.boolean(),
-  per_trainee: z.boolean(),
-});
-
-export const updateTrainingCategorySchema = z.object({
-  id: z.number().int().positive(),
-  label: z.string().min(1, "Unesite naziv kategorije."),
-  is_trainer_based: z.boolean(),
-  per_trainee: z.boolean(),
 });
 
 export const toggleTrainingCategoryActiveSchema = z.object({
@@ -63,6 +43,3 @@ export const toggleTrainingCategoryActiveSchema = z.object({
 
 export type UpsertPriceInput = z.infer<typeof upsertPriceSchema>;
 export type CreateMembershipTypeInput = z.infer<typeof createMembershipTypeSchema>;
-export type UpdateMembershipTypeInput = z.infer<typeof updateMembershipTypeSchema>;
-export type CreateTrainingCategoryInput = z.infer<typeof createTrainingCategorySchema>;
-export type UpdateTrainingCategoryInput = z.infer<typeof updateTrainingCategorySchema>;
