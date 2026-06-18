@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.9
+Version: 1.10
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -14,6 +14,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.7 adds **shift attribution**: `shift_id` + `waived_*` on `checkin`/`payment`, `shift_one_open_uidx`, pending partial indexes on `created_at`, RPCs `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; drops `ensure_open_shift()`. Migration: `20260617100700_shift_attribution`.
 > v1.9 — **Phase 0 security hardening** (2026-06-18). Migrations `20260618120000`–`20260618120200`: (1) `handle_new_user` no longer reads `role` from client-suppliable `raw_user_meta_data` — always seeds `'user'`; admin role is granted via a server-authoritative service-role update (see §3.1, `Tech.md` §3.3). (2) `open_or_resume_shift()` switched INVOKER → **`SECURITY DEFINER`** and the `shift_select_open` RLS policy dropped, so non-admin workers have no SELECT on `shift` (least privilege; §3.2, §12.1). (3) `EXECUTE` on the `rls_auto_enable()` event-trigger function revoked from `anon`/`authenticated`/`public` (Supabase advisor 0028/0029). Auth GoTrue config also hardened (`disable_signup`, `password_min_length=8`; leaked-password/HIBP pending Pro plan) — `Tech.md` §3/§10.
 > v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
+> v1.10 — **Phase 1a Members fixes** (2026-06-18). Migrations `20260618130000`–`20260618131000`: (1) `member_phone_digits_uidx` — a **functional unique index** on `regexp_replace(phone, '\D', '', 'g')` making phone unique by normalized digits, globally incl. archived (§3.3, §7); replaces the previous "NOT unique / family sharing" rule. App maps the `23505` violation to a readable message. (2) `search_members` recreated (same 4-arg signature/grants) so its `active_m` CTE also surfaces `istekla` memberships for the list status (§9). Applied via `supabase db push`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -148,7 +149,7 @@ create table member (
   member_no     bigint,                -- null until assigned on sync; never reused (uniqueness via partial unique index below)
   first_name    text not null,
   last_name     text not null,
-  phone         text not null,         -- required; NOT unique (family sharing allowed, soft warning in app)
+  phone         text not null,         -- required; UNIQUE by normalized digits, globally incl. archived (member_phone_digits_uidx)
   discount_flag boolean not null default false,  -- family/school; any worker may toggle
   comment       text,                  -- special needs; triggers popup at check-in/payment
   archived      boolean not null default false,
@@ -165,6 +166,8 @@ create index member_created_by_idx on member (created_by);
 create index member_updated_by_idx on member (updated_by);
 create index member_active_idx     on member (archived) where not archived;
 create index member_phone_idx      on member (phone);
+-- phone unique by normalized digits (globally, incl. archived); migration 20260618130000
+create unique index member_phone_digits_uidx on member ((regexp_replace(phone, '\D', '', 'g')));
 -- fast search by name / surname (trigram or prefix); enable pg_trgm if using fuzzy search
 create index member_name_idx       on member (lower(last_name), lower(first_name));
 ```
@@ -619,6 +622,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ## 7. Index summary (hot paths)
 - Member search: `member_name_idx`, `member_phone_idx`, `member_member_no_uidx`, plus trigram GIN (`member_first_name_trgm_idx`, `member_last_name_trgm_idx`) for fuzzy name search (§9).
+- Phone uniqueness: `member_phone_digits_uidx` — unique on `regexp_replace(phone, '\D', '', 'g')` (normalized digits), globally incl. archived; enforces the hard duplicate-phone block.
 - Dashboard (day): `checkin_business_date_idx`, `checkin_open_key_idx` (partial: open + not voided), `checkin_voided_by_idx`.
 - Takings: `payment_business_date_idx` (partial, excludes voided).
 - Soon-to-expire: `membership_end_date_idx`.
@@ -697,10 +701,10 @@ Migration `20260617100600_login_attempt_cleanup`. `cleanup_login_attempts()` del
 
 ## 9. Member search (`pg_trgm`)
 
-The Members page and dashboard check-in search use fuzzy search over **name / surname / member number** (phone is displayed but not searchable). Migrations: `20260614150000_member_search`, `20260614151000_harden_member_search`, `20260614152000_member_search_drop_phone`, `20260615200000_member_search_no_phone`, `20260615210000_search_members_single_overload`.
+The Members page and dashboard check-in search use fuzzy search over **name / surname / member number** (phone is displayed but not searchable). Migrations: `20260614150000_member_search`, `20260614151000_harden_member_search`, `20260614152000_member_search_drop_phone`, `20260615200000_member_search_no_phone`, `20260615210000_search_members_single_overload`, `20260618131000_member_search_include_expired`.
 
 - Enables `pg_trgm` (in the `extensions` schema) and adds trigram GIN indexes on `member.first_name`, `member.last_name` (used by `ILIKE`/`similarity`).
-- `search_members(q text, include_archived boolean, lim int, off int)` (`security invoker`, `search_path = public, extensions`) returns paginated member rows enriched with the single active/paused membership summary (`status`, `label`, `end_date`, `sessions_left`, `is_time_based`) plus a `total_count` for pagination.
+- `search_members(q text, include_archived boolean, lim int, off int)` (`security invoker`, `search_path = public, extensions`) returns paginated member rows enriched with the most-relevant membership summary (`status`, `label`, `end_date`, `sessions_left`, `is_time_based`) plus a `total_count` for pagination. Since `20260618131000`, the `active_m` CTE also considers **`istekla`** memberships (active/paused take priority, else the newest expired) so the list shows **"Istekla"** instead of "no membership" once `promote_memberships()` expires a membership.
   - Empty `q` → browse all active (or all when `include_archived`) ordered by `lower(last_name), lower(first_name)`.
   - Non-empty `q` → name match via `ILIKE` + `similarity` ordering; digit-normalized prefix match on `member_no`. **Phone is not searchable.**
 - `EXECUTE` granted to `authenticated`, revoked from `anon`/`public`.

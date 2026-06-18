@@ -4,11 +4,21 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
 import { requireUser, requireAdmin } from "@/lib/auth/session";
-import { memberFormSchema, normalizePhone } from "@/lib/members/schema";
+import { memberFormSchema } from "@/lib/members/schema";
 import type { MemberFormValues } from "@/lib/members/schema";
 import type { MemberSearchRow } from "@/lib/members/types";
 
 const MEMBERS_PAGE_SIZE = 50;
+
+const PHONE_TAKEN_ERROR = "Broj telefona već postoji kod drugog člana.";
+
+/** Maps the unique-phone constraint violation to a readable message; otherwise the raw error. */
+function mapMemberWriteError(error: { code?: string; message: string }): string {
+  if (error.code === "23505" || error.message.includes("member_phone_digits_uidx")) {
+    return PHONE_TAKEN_ERROR;
+  }
+  return error.message;
+}
 
 type ActionError = { ok: false; error: string };
 type ActionOk<T> = { ok: true } & T;
@@ -19,13 +29,6 @@ export interface SearchMembersResult {
   total: number;
   page: number;
   pageSize: number;
-}
-
-export interface DuplicatePhoneMatch {
-  id: string;
-  member_no: number | null;
-  first_name: string;
-  last_name: string;
 }
 
 async function getClient() {
@@ -59,33 +62,6 @@ export async function searchMembers(
   return { rows, total, page, pageSize: MEMBERS_PAGE_SIZE };
 }
 
-/** Returns active members sharing the same phone number (digit-normalized). */
-export async function checkPhoneDuplicate(
-  phone: string,
-): Promise<DuplicatePhoneMatch[]> {
-  await requireUser();
-  const digits = normalizePhone(phone);
-  if (digits.length < 3) return [];
-
-  const supabase = await getClient();
-  const { data, error } = await supabase
-    .from("member")
-    .select("id, member_no, first_name, last_name, phone")
-    .eq("archived", false)
-    .limit(50);
-
-  if (error) throw new Error(error.message);
-
-  return (data ?? [])
-    .filter((m) => normalizePhone(m.phone) === digits)
-    .map(({ id, member_no, first_name, last_name }) => ({
-      id,
-      member_no,
-      first_name,
-      last_name,
-    }));
-}
-
 /** Creates a member, returning the new id. Sets audit columns to the acting staff (required by RLS). */
 export async function createMember(
   values: MemberFormValues,
@@ -113,7 +89,7 @@ export async function createMember(
     .select("id")
     .single();
 
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: mapMemberWriteError(error) };
 
   revalidatePath("/clanovi");
   return { ok: true, id: data.id };
@@ -145,7 +121,7 @@ export async function updateMember(
     })
     .eq("id", id);
 
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: mapMemberWriteError(error) };
 
   revalidatePath("/clanovi");
   revalidatePath(`/clanovi/${id}`);
