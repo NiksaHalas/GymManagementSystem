@@ -194,7 +194,7 @@ create trigger member_assign_no
 ```
 - Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
 
-**Restore admin-only (migration `20260618132000`):** a `BEFORE UPDATE` trigger `member_restore_admin_guard` calls `enforce_member_restore_admin()` when `archived` changes. If `OLD.archived = true` and `NEW.archived = false` and the caller is not an admin (`is_admin()`), the update raises `42501` (*insufficient privilege*). Archiving (`false→true`) and other field updates are unaffected. The `member_update` RLS policy remains open so any worker can archive; restore is gated only by the trigger (RLS `WITH CHECK` cannot express OLD/NEW comparisons — see §5.1).
+**Restore admin-only (migration `20260618132000`):** `member_restore_admin_guard` → `enforce_member_restore_admin()` — blocks `archived` true→false unless `is_admin()` (`42501`). Archiving and other updates unchanged. Policy detail: §5.1.
 
 ### 3.4 `training_category`
 Runtime-manageable training categories (replaces the former `training_type` enum). Admins can add categories; seeded with the five original types.
@@ -606,8 +606,6 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `staff` | `id = auth.uid() or is_admin()` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `shift` | `is_admin()` | `staff_id = auth.uid() or is_admin()` | `staff_id = auth.uid() or is_admin()` (both) | — |
 | `member` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
-
-> **`member` restore vs archive:** the UPDATE policy allows any authenticated worker to update any member row (audit via `updated_by`). Archiving (`archived` false→true) is intentionally open to all workers (PRD §2). **Restore** (`archived` true→false) is **Admin-only** and enforced by the `member_restore_admin_guard` trigger (`enforce_member_restore_admin()` — migration `20260618132000`), because RLS `WITH CHECK` cannot compare OLD and NEW column values.
 | `membership` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
 | `membership_type` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `training_category` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
@@ -617,6 +615,8 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `checkin` | `true` | `staff_id = auth.uid()` | `is_admin() or business_date = business_today()` (both) | `is_admin()` |
 | `session_log` | `true` | `true` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `reserved_session` | `true` | `created_by = auth.uid()` | `true` / `true` | `is_admin()` |
+
+> **`member` restore vs archive:** the UPDATE policy stays open (any worker may archive). Restore (`archived` true→false) is Admin-only via trigger — see §3.3.
 
 ### 5.2 Notes
 - **Actor binding (audit):** INSERT/UPDATE on operational tables enforce that the acting column equals `auth.uid()` — `created_by` (`member`, `membership`, `reserved_session`), `staff_id` (`payment`, `checkin`), `updated_by` (`member`/`membership` update). **Server actions using the `authenticated` (cookie) client MUST set these columns to the signed-in user, or the write is rejected by RLS.** Server-side code using the `service_role` key bypasses RLS.

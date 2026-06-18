@@ -93,7 +93,7 @@ Card fields:
 - Phone number (**required and unique across members**, including archived). Each member has their own number; entering a number already on file is **blocked with a readable message** ("Broj telefona već postoji kod drugog člana."). Uniqueness is by normalized digits (ignores spaces/dashes/`+`) and enforced in the database.
 - Current membership: type, payment date, start date, end date, remaining sessions (if a package), status (active / expired / paused / no membership). When the latest membership has expired, the card and the members list show **"Istekla"** (not "no membership"), and a **"Istorija članarina"** section lists past/expired memberships (type · start–end · status).
 - Discount flag (family / school) — yes/no. **Any worker can toggle it.**
-- Custom price — if one exists. *(Product note: custom price is **per payment** (`is_custom_price` / optional `custom_reason` on each cash payment — see `DB.md` §3.8), not a standing attribute on the member. There is no single "active custom price" per member with clear semantics, so the card **does not** show a separate custom-price field; discounted payments appear in **"Istorija uplata"** with a discount badge.)*
+- Custom price is **not** a separate card field — it is recorded **per payment** (`is_custom_price` / optional `custom_reason`; see `DB.md` §3.8). Discounted payments appear in **"Istorija uplata"** with a discount badge.
 - Comment (special needs).
 - **History**: previous memberships, payment history, session history (trainer-session dates), reserved/owed sessions.
 
@@ -304,7 +304,7 @@ Rules:
 - Multiple arrivals of the same member per day; solo arrival logged without deducting a session.
 - Trainer session: tick type (individual/duo/guided) → deduct session + write date to card. Duo trainees checked in independently; guided participants each get a check-in, trainer chosen once.
 - 0 sessions: allow the session, record "rezervisano" (warn after 3), charge the **captured** daily price at the next payment.
-- Soft delete of members (Admin can restore); member number permanent and never reused; archiving blocked while owed sessions are unsettled.
+- Soft delete of members (Admin can restore — DB-enforced; see §3.3); member number permanent and never reused; archiving blocked while owed sessions are unsettled.
 - User edits all member data, but daily logs only for today; Admin all days.
 - Voiding a payment reverts the linked membership change; takings show the net total.
 - Takings: User daily; Admin daily/monthly/yearly; Admin-only export on demand.
