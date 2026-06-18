@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.12
+Version: 1.13
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -17,6 +17,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.10 — **Phase 1a Members fixes** (2026-06-18). Migrations `20260618130000`–`20260618131000`: (1) `member_phone_digits_uidx` — a **functional unique index** on `regexp_replace(phone, '\D', '', 'g')` making phone unique by normalized digits, globally incl. archived (§3.3, §7); replaces the previous "NOT unique / family sharing" rule. App maps the `23505` violation to a readable message. (2) `search_members` recreated (same 4-arg signature/grants) so its `active_m` CTE also surfaces `istekla` memberships for the list status (§9). Applied via `supabase db push`.
 > v1.11 — **Phase 1a Members review closure** (2026-06-18). Migration `20260618132000`: **`member_restore_admin_guard`** trigger + **`enforce_member_restore_admin()`** — restore (`archived` true→false) allowed only when `is_admin()`; archiving (false→true) remains open to any authenticated worker. The `member_update` RLS policy stays `using (true) / with check (updated_by = auth.uid())` because RLS `WITH CHECK` cannot compare OLD vs NEW; the trigger is the authoritative guard (see §5.1, §3.3). Applied via `supabase db push`.
 > v1.12 — **no schema change.** Confirms **Phase 0 alignment production deploy** (2026-06-18): migration `20260618140000` (`has_open_shift`) applied on remote; `supabase db push` was a no-op (ledger already 1:1, 31/31). RPC documented in §12.3a. See `Tech.md` v1.10 / §9.2.
+> v1.13 — **Phase 1a Members review follow-ups** (2026-06-18). Migration `20260618184915` (`member_archive_no_debt_guard`): trigger **`member_archive_no_debt_guard`** + **`enforce_member_archive_no_debt()`** — archiving (`archived` false→true) is blocked while the member has any unsettled `reserved_session` (`settled = false`), raising SQLSTATE `23514` with a readable Serbian message (PRD §3.5; §3.3, §5.1). It is the authoritative DB backstop to the existing count-then-act pre-check in `clanovi/actions.ts` (closes a TOCTOU window). **Ledger note:** applied via MCP `apply_migration` (CLI `db push` was unavailable — project not linked locally), so the remote ledger stamped its execution timestamp `20260618184915`; the repo migration file was **renamed to that version** to keep the ledger 1:1 (same reconcile convention as v1.8). See `Tech.md` v1.12.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -196,6 +197,8 @@ create trigger member_assign_no
 - Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
 
 **Restore admin-only (migration `20260618132000`):** `member_restore_admin_guard` → `enforce_member_restore_admin()` — blocks `archived` true→false unless `is_admin()` (`42501`). Archiving and other updates unchanged. Policy detail: §5.1.
+
+**Archive-debt guard (migration `20260618184915`):** `member_archive_no_debt_guard` → `enforce_member_archive_no_debt()` — blocks `archived` false→true while the member has any unsettled `reserved_session` (`settled = false`); raises `23514` with a readable message (PRD §3.5). The app pre-checks the same condition for fast UX (`clanovi/actions.ts`); the trigger is the authoritative TOCTOU backstop. Policy detail: §5.1.
 
 ### 3.4 `training_category`
 Runtime-manageable training categories (replaces the former `training_type` enum). Admins can add categories; seeded with the five original types.
@@ -617,7 +620,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `session_log` | `true` | `true` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `reserved_session` | `true` | `created_by = auth.uid()` | `true` / `true` | `is_admin()` |
 
-> **`member` restore vs archive:** the UPDATE policy stays open (any worker may archive). Restore (`archived` true→false) is Admin-only via trigger — see §3.3.
+> **`member` restore vs archive:** the UPDATE policy stays open, but two `BEFORE UPDATE` triggers guard the `archived` transitions: restore (`archived` true→false) is Admin-only via `member_restore_admin_guard` (`42501`), and archiving (false→true) is blocked while unsettled `reserved_session` exist via `member_archive_no_debt_guard` (`23514`). See §3.3.
 
 ### 5.2 Notes
 - **Actor binding (audit):** INSERT/UPDATE on operational tables enforce that the acting column equals `auth.uid()` — `created_by` (`member`, `membership`, `reserved_session`), `staff_id` (`payment`, `checkin`), `updated_by` (`member`/`membership` update). **Server actions using the `authenticated` (cookie) client MUST set these columns to the signed-in user, or the write is rejected by RLS.** Server-side code using the `service_role` key bypasses RLS.
