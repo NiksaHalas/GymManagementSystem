@@ -1,7 +1,7 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.5
-Date: 2026-06-17
+Version: 1.6
+Date: 2026-06-18
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
@@ -11,6 +11,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.3 records the implemented **Pazar / payment MVP**: `(app)/pazar`, `lib/pazar/`, shared `components/payment/payment-dialog.tsx`, Postgres RPCs `record_payment` / `void_payment` / `promote_memberships` (`DB.md` §8.2, §11), group Fitpass +300 in `create_checkin`, payment entry points on dashboard + member card, Admin CSV export (`/api/admin/pazar/export`). Migrations `20260617100000`–`20260617100400`.
 > v1.4 records **Phase 0 auth/shift hardening**: shift lifecycle via Postgres RPCs `ensure_open_shift()` / `end_shift()` (`DB.md` §12); counter hard-fail guards in `lib/shifts/actions.ts`; password reset SSR callback (`app/auth/callback/route.ts` — `verifyOtp` + `token_hash`, not implicit `action_link`); middleware `GUEST_ONLY` vs public auth paths; `login_attempt` pg_cron cleanup (`DB.md` §8.3). Migrations `20260617100500`, `20260617100600`.
 > v1.5 records **Phase 0 shift attribution (fail-open)**: `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; `shift_id` + waive on `checkin`/`payment`; counter banner + admin reconcile (`?unassigned=1`); deploy runbook `npm run auth:push-config`. Migration `20260617100700_shift_attribution`.
+> v1.6 records the **first production deployment** (Vercel project `gym-management-system` → `https://gym-management-system-five-ashy.vercel.app`, Supabase `qkmrssvfeljfkqbbxfpr`) and the **migration-ledger reconcile** (MCP-applied versions re-aligned to repo files via `db reset` + `migration repair`). Adds the localhost guard in `push-supabase-auth-config.mjs`, `vercel.json` `fra1` region, the `supabase` CLI devDependency, and the **deployment incidents & lessons** in §9. Phase 0 smoke (auth reset, shift attribution, admin reconcile) verified live on 2026-06-18.
 
 ---
 
@@ -365,15 +366,26 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 - **Cron**: shift auto-close and membership promotion via Supabase `pg_cron` (`auto_close_shifts`, `promote_memberships`); optional Vercel Cron for app-level tasks.
 - Migrations applied through the Supabase CLI; types regenerated after each migration.
 
+### Production coordinates (first deploy 2026-06-18)
+
+| | Value |
+|---|---|
+| Vercel project | `gym-management-system` (team "Niksa's projects") |
+| Production URL | `https://gym-management-system-five-ashy.vercel.app` |
+| Function region | **`fra1`** (Frankfurt) via `vercel.json` `regions`, colocated with Supabase |
+| Supabase project ref | `qkmrssvfeljfkqbbxfpr` (`eu-central-1`) — the only active project = **production** |
+| Git integration | Vercel auto-deploys `main` on push/merge |
+| Migration tooling | `supabase` CLI pinned as a devDependency |
+
 ### Deploy runbook (manual — no CI yet)
 
-1. Apply pending SQL migrations: `supabase db push` (or MCP `apply_migration` per file).
+1. Apply pending SQL migrations: **`supabase db push`** (preserves the migration filename timestamp as the ledger version, keeping repo ↔ remote 1:1). ⚠️ Using MCP `apply_migration` instead records an **MCP-generated** timestamp, which drifts the ledger from the repo filenames — if you must use it, plan a periodic `migration repair` reconcile (see incidents below).
 2. Regenerate types: `supabase gen types typescript --local > lib/db/types.ts` (or remote equivalent).
-3. Set production env on Vercel: `NEXT_PUBLIC_*`, `SUPABASE_SERVICE_ROLE_KEY`, `COUNTER_DEVICE_SECRET`, `RESEND_*`, optional `SHIFT_ATTRIBUTION_LAUNCH_AT`.
-4. **Auth config push** (redirect URLs + OTP 3600 s): export `SUPABASE_ACCESS_TOKEN` (Dashboard → Access Tokens or `supabase login`) and ensure `NEXT_PUBLIC_SITE_URL` matches production, then run **`npm run auth:push-config`** from the repo root before or after deploy.
+3. Set production env on Vercel: `NEXT_PUBLIC_*`, `SUPABASE_SERVICE_ROLE_KEY`, `COUNTER_DEVICE_SECRET`, `RESEND_*`, optional `SHIFT_ATTRIBUTION_LAUNCH_AT`. ⚠️ **`NEXT_PUBLIC_*` vars must NOT be marked "Sensitive"** on Vercel — Sensitive withholds them from the build step, so Next.js inlines them as `undefined` and the app 500s (see incidents). Keep only true server secrets Sensitive.
+4. **Auth config push** (redirect URLs + OTP 3600 s): export `SUPABASE_ACCESS_TOKEN` (Dashboard → Access Tokens or `supabase login`) and run with the **production** URL inline, never from dev `.env.local`: `NEXT_PUBLIC_SITE_URL=https://<prod> npm run auth:push-config`. The script now **refuses a localhost `site_url`** unless `--allow-localhost` is passed.
 5. Smoke-test: login, password reset (`/auth/callback` → `/reset`), counter shift open/foreign/takeover, switch worker, admin reconcile badge.
 
-#### Smoke test checklist (Phase 0 shift attribution)
+#### Smoke test checklist (Phase 0 shift attribution) — ✅ verified live 2026-06-18
 
 - [ ] Login / logout; disabled account redirect
 - [ ] Password reset: valid link → `/reset`; expired recovery → `/login?error=expired` with toast + link to `/zaboravljena-lozinka`
@@ -382,6 +394,17 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 - [ ] Admin remote: no banner, no shift RPC; badge on dashboard/pazar when pending
 - [ ] `/dashboard?unassigned=1` and `/pazar?unassigned=1`: assign shift + waive
 - [ ] `npm run auth:push-config` with token (OTP 3600 + redirect URLs)
+
+### Deployment incidents & lessons (first prod deploy, 2026-06-18)
+
+Four issues surfaced on the first real deploy. All are fixed; documented here so they don't recur.
+
+| Symptom | Root cause | Fix / guard |
+|---|---|---|
+| **App 500 on every route** — "Your project's URL and Key are required" | `NEXT_PUBLIC_SUPABASE_URL` / `…PUBLISHABLE_KEY` were marked **"Sensitive"** on Vercel. Sensitive vars are withheld from the build step, so Next.js inlined them as `undefined` (these are public, build-time-inlined vars). A no-cache rebuild did not help — the value simply wasn't exposed to the build. | Re-create all `NEXT_PUBLIC_*` as **plain (non-Sensitive)** vars; keep only server secrets Sensitive. Redeploy. |
+| **Reset email link broken** — `http://auth/callback?...` ("Server Not Found") | `NEXT_PUBLIC_SITE_URL` held a **malformed value**, so the link base in `lib/auth/password-reset.ts` (`${SITE_URL}/auth/callback…`) resolved to a junk host. | Set `NEXT_PUBLIC_SITE_URL` to the exact full prod URL (`https://…vercel.app`), no stray characters; redeploy (it is build-time inlined). |
+| **Remote `site_url` = `http://localhost:3000`** — reset/magic-link emails pointed at localhost | `auth:push-config` was run with the dev `.env.local` (`NEXT_PUBLIC_SITE_URL=http://localhost:3000`) before a prod URL existed. | Run the script with the prod URL inline; the script now **refuses localhost** unless `--allow-localhost`. |
+| **Migration ledger drift** — remote ledger versions didn't match repo filenames; a duplicated `shift_attribution`; `login_attempt` table created outside the ledger | Migrations had been applied via **MCP `apply_migration`**, which records its own timestamp instead of the migration filename's. Every MCP-applied migration diverged. | Verified the repo migrations cleanly rebuild the schema (`supabase db reset`) and that `db diff --linked` showed only Supabase-managed noise (`pg_net`, default-privilege `anon` grants, migra function re-emission — **never** apply the diff's `DROP EXTENSION pg_net` to remote). Re-aligned the ledger 1:1 with `supabase migration repair` (local-only → `applied`, MCP-only → `reverted`). Going forward, prefer `supabase db push`. |
 
 ---
 
@@ -401,6 +424,8 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 
 > The existing helpers read `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Keep those names. Never expose the service-role key or `COUNTER_DEVICE_SECRET` to the browser. A template is provided in `.env.example`; the 2 initial Admins are provisioned with `scripts/seed-admins.mjs`.
 >
+> **Vercel "Sensitive" flag:** `NEXT_PUBLIC_*` vars are public and **build-time inlined** — they must stay **non-Sensitive**, otherwise Vercel withholds them from the build and the app 500s (§9 incidents). Mark only true server secrets (`SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `COUNTER_DEVICE_SECRET`) Sensitive. `NEXT_PUBLIC_SITE_URL` must be the **exact full prod URL** (a malformed value breaks reset-email links).
+>
 > **Supabase Dashboard (Auth → URL Configuration):** add `{NEXT_PUBLIC_SITE_URL}/auth/callback` to **Redirect URLs**. Set **Email OTP expiry** to **3600** seconds (1 hour) for password reset links — or run **`npm run auth:push-config`** with `SUPABASE_ACCESS_TOKEN` set.
 
 ---
@@ -415,7 +440,7 @@ Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the 
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts, counter-device binding, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer).
+- **Phase 0 — Setup** (done; **deployed to production 2026-06-18, smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts, counter-device binding, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9.
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 (`/pazar`, §2.4).
 - **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct. *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge, payment void + membership revert, monthly/yearly takings + Admin export, shifts, remote admin overview — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync; automatic USB backup 3×/day.

@@ -1,14 +1,15 @@
 # PRD — Gym Management System
 
-Version: 1.5
-Date: 2026-06-17
-Status: Approved for development
+Version: 1.6
+Date: 2026-06-18
+Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
 > v1.3 adds **§9 Implementation status** tracking what is live in the app vs. deferred.
 > v1.4 marks **Pazar MVP** (§9.1) as implemented: cash payment, debt settlement, void/revert, daily takings, Admin month/year + CSV export, group Fitpass +300, queued `zakazana` renewals.
 > v1.5 notes **Phase 0 auth/shift hardening** delivered in code (shift RPCs, password reset SSR callback, login-attempt cleanup) — see `Tech.md` v1.4 / `DB.md` v1.6.
+> v1.6 notes **Phase 0 live in production** (deployed 2026-06-18): login, worker password reset (email link confirmed to point to the production site, not a dev address), shift tracking, and the Admin reconcile of un-attributed check-ins/payments were all verified end-to-end on the live site. Technical deployment notes — and an explanation of the deployment issues that were fixed along the way — are in `Tech.md` §9; the migration-history reconcile is in `DB.md` v1.8.
 
 ---
 

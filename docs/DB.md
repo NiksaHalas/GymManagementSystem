@@ -1,7 +1,7 @@
 # DB — Database Schema
 
-Version: 1.7
-Date: 2026-06-17
+Version: 1.8
+Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
@@ -12,6 +12,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.5 adds **Pazar / payment MVP**: `membership_status` value `zakazana` (pre-paid queued renewal), RPCs `record_payment`, `void_payment`, `offered_membership_price`, `promote_memberships()` + daily `pg_cron` job, and group Fitpass +300 RSD charged atomically in `create_checkin`. Migrations: `20260617100000_add_membership_status_zakazana`, `20260617100100_payment_rpcs`, `20260617100200_payment_pgcron`, `20260617100300_group_fitpass_surcharge`, `20260617100400_fix_payment_rpcs_reserved_session_columns`.
 > v1.6 adds **shift lifecycle RPCs** `ensure_open_shift()` and `end_shift()` (migration `20260617100500_shift_rpcs`) and **login attempt cleanup** cron (migration `20260617100600_login_attempt_cleanup`).
 > v1.7 adds **shift attribution**: `shift_id` + `waived_*` on `checkin`/`payment`, `shift_one_open_uidx`, pending partial indexes on `created_at`, RPCs `open_or_resume_shift()` / `handover_shift()` / INVOKER `end_shift()`; drops `ensure_open_shift()`. Migration: `20260617100700_shift_attribution`.
+> v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
