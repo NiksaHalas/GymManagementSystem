@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.11
+Version: 1.12
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -16,6 +16,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
 > v1.10 — **Phase 1a Members fixes** (2026-06-18). Migrations `20260618130000`–`20260618131000`: (1) `member_phone_digits_uidx` — a **functional unique index** on `regexp_replace(phone, '\D', '', 'g')` making phone unique by normalized digits, globally incl. archived (§3.3, §7); replaces the previous "NOT unique / family sharing" rule. App maps the `23505` violation to a readable message. (2) `search_members` recreated (same 4-arg signature/grants) so its `active_m` CTE also surfaces `istekla` memberships for the list status (§9). Applied via `supabase db push`.
 > v1.11 — **Phase 1a Members review closure** (2026-06-18). Migration `20260618132000`: **`member_restore_admin_guard`** trigger + **`enforce_member_restore_admin()`** — restore (`archived` true→false) allowed only when `is_admin()`; archiving (false→true) remains open to any authenticated worker. The `member_update` RLS policy stays `using (true) / with check (updated_by = auth.uid())` because RLS `WITH CHECK` cannot compare OLD vs NEW; the trigger is the authoritative guard (see §5.1, §3.3). Applied via `supabase db push`.
+> v1.12 — **no schema change.** Confirms **Phase 0 alignment production deploy** (2026-06-18): migration `20260618140000` (`has_open_shift`) applied on remote; `supabase db push` was a no-op (ledger already 1:1, 31/31). RPC documented in §12.3a. See `Tech.md` v1.10 / §9.2.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -194,7 +195,7 @@ create trigger member_assign_no
 ```
 - Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
 
-**Restore admin-only (migration `20260618132000`):** a `BEFORE UPDATE` trigger `member_restore_admin_guard` calls `enforce_member_restore_admin()` when `archived` changes. If `OLD.archived = true` and `NEW.archived = false` and the caller is not an admin (`is_admin()`), the update raises `42501` (*insufficient privilege*). Archiving (`false→true`) and other field updates are unaffected. The `member_update` RLS policy remains open so any worker can archive; restore is gated only by the trigger (RLS `WITH CHECK` cannot express OLD/NEW comparisons — see §5.1).
+**Restore admin-only (migration `20260618132000`):** `member_restore_admin_guard` → `enforce_member_restore_admin()` — blocks `archived` true→false unless `is_admin()` (`42501`). Archiving and other updates unchanged. Policy detail: §5.1.
 
 ### 3.4 `training_category`
 Runtime-manageable training categories (replaces the former `training_type` enum). Admins can add categories; seeded with the five original types.
@@ -606,8 +607,6 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `staff` | `id = auth.uid() or is_admin()` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `shift` | `is_admin()` | `staff_id = auth.uid() or is_admin()` | `staff_id = auth.uid() or is_admin()` (both) | — |
 | `member` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
-
-> **`member` restore vs archive:** the UPDATE policy allows any authenticated worker to update any member row (audit via `updated_by`). Archiving (`archived` false→true) is intentionally open to all workers (PRD §2). **Restore** (`archived` true→false) is **Admin-only** and enforced by the `member_restore_admin_guard` trigger (`enforce_member_restore_admin()` — migration `20260618132000`), because RLS `WITH CHECK` cannot compare OLD and NEW column values.
 | `membership` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
 | `membership_type` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `training_category` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
@@ -617,6 +616,8 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `checkin` | `true` | `staff_id = auth.uid()` | `is_admin() or business_date = business_today()` (both) | `is_admin()` |
 | `session_log` | `true` | `true` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `reserved_session` | `true` | `created_by = auth.uid()` | `true` / `true` | `is_admin()` |
+
+> **`member` restore vs archive:** the UPDATE policy stays open (any worker may archive). Restore (`archived` true→false) is Admin-only via trigger — see §3.3.
 
 ### 5.2 Notes
 - **Actor binding (audit):** INSERT/UPDATE on operational tables enforce that the acting column equals `auth.uid()` — `created_by` (`member`, `membership`, `reserved_session`), `staff_id` (`payment`, `checkin`), `updated_by` (`member`/`membership` update). **Server actions using the `authenticated` (cookie) client MUST set these columns to the signed-in user, or the write is rejected by RLS.** Server-side code using the `service_role` key bypasses RLS.
