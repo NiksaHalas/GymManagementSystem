@@ -42,7 +42,7 @@ import {
   markLeft,
   updateCheckinKey,
   voidCheckin,
-} from "@/app/(app)/dashboard/actions";
+} from "@/app/(app)/(shell)/dashboard/actions";
 import {
   formatCheckinDisplayName,
   formatPaymentBadge,

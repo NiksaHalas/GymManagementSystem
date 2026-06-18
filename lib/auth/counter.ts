@@ -1,6 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 
 const COOKIE_NAME = "gym_counter";
 const COOKIE_VALUE = "1";
@@ -36,16 +36,12 @@ function verifySigned(signed: string): string | null {
   const value = signed.slice(0, dotIdx);
   const sig = signed.slice(dotIdx + 1);
   const expected = sign(value);
-  // Constant-time comparison via timing-safe approach using Buffer.
   if (sig.length !== expected.length) return null;
   const sigBuf = Buffer.from(sig, "hex");
   const expectedBuf = Buffer.from(expected, "hex");
   if (sigBuf.length !== expectedBuf.length) return null;
-  let mismatch = 0;
-  for (let i = 0; i < sigBuf.length; i++) {
-    mismatch |= sigBuf[i] ^ expectedBuf[i];
-  }
-  return mismatch === 0 ? value : null;
+  if (!timingSafeEqual(sigBuf, expectedBuf)) return null;
+  return value;
 }
 
 /**

@@ -137,7 +137,11 @@ export async function sendPasswordResetEmail(username: string): Promise<void> {
       to: maskEmail(to),
       error: err instanceof Error ? err.message : String(err),
     });
-    throw err;
+    if (DEV) {
+      throw err;
+    }
+    // Production: silent return — caller shows neutral success (anti-enumeration).
+    return;
   }
 }
 

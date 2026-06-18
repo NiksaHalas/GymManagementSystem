@@ -36,7 +36,7 @@ import {
   getPaymentCatalogAction,
   getPaymentContextAction,
   recordPayment,
-} from "@/app/(app)/pazar/actions";
+} from "@/app/(app)/(shell)/pazar/actions";
 import { getMemberStatus } from "@/lib/members/status";
 import { formatFullName, formatMemberNo, formatRsd, formatDate } from "@/lib/members/format";
 import type { PaymentCatalog, PaymentContext } from "@/lib/pazar/types";

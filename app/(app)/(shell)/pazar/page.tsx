@@ -6,9 +6,9 @@ import {
   fetchYearTakings,
 } from "@/lib/pazar/queries";
 import { fetchShiftsForBusinessDay } from "@/lib/shifts/queries";
-import { PazarDateNav } from "@/app/(app)/pazar/date-nav";
-import { PazarClient } from "@/app/(app)/pazar/pazar-client";
-import { TakingsTabs } from "@/app/(app)/pazar/takings-tabs";
+import { PazarDateNav } from "@/app/(app)/(shell)/pazar/date-nav";
+import { PazarClient } from "@/app/(app)/(shell)/pazar/pazar-client";
+import { TakingsTabs } from "@/app/(app)/(shell)/pazar/takings-tabs";
 import { formatRsd } from "@/lib/members/format";
 
 export const metadata = {

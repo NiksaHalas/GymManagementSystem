@@ -31,7 +31,7 @@ import { DiscountToggle, CommentEditor } from "./quick-edits";
 import { EditMemberDialog } from "./edit-member-dialog";
 import { ArchiveControls } from "./archive-controls";
 import { MemberPayButton } from "./member-pay-button";
-import { PaymentRowActions } from "@/app/(app)/pazar/payment-row-actions";
+import { PaymentRowActions } from "@/app/(app)/(shell)/pazar/payment-row-actions";
 import { fetchScheduledMemberships } from "@/lib/pazar/queries";
 import { businessToday } from "@/lib/time/business-day";
 import { paymentKindLabel } from "@/lib/pazar/format";

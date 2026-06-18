@@ -1,22 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { z } from "zod";
-import { createClient } from "@/utils/supabase/server";
+import { getAdminOrNull } from "@/lib/auth/session";
+import { getServerSupabase } from "@/lib/supabase/server-client";
 import { paymentKindLabel } from "@/lib/pazar/format";
-
-async function assertAdmin() {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  const { data: user } = await supabase.auth.getUser();
-  if (!user.user) return null;
-  const { data: staff } = await supabase
-    .from("staff")
-    .select("role, active")
-    .eq("id", user.user.id)
-    .single();
-  if (staff?.role !== "admin" || !staff.active) return null;
-  return supabase;
-}
 
 const querySchema = z.object({
   period: z.enum(["day", "month", "year"]),
@@ -32,10 +18,12 @@ function csvEscape(value: string | number | boolean | null): string {
 }
 
 export async function GET(req: NextRequest) {
-  const supabase = await assertAdmin();
-  if (!supabase) {
+  const adminStaff = await getAdminOrNull();
+  if (!adminStaff) {
     return NextResponse.json({ error: "Nemate pristup." }, { status: 403 });
   }
+
+  const supabase = await getServerSupabase();
 
   const parsed = querySchema.safeParse({
     period: req.nextUrl.searchParams.get("period"),

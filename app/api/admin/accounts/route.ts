@@ -1,35 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { z } from "zod";
-import { createClient } from "@/utils/supabase/server";
 import { createAdminClient } from "@/utils/supabase/admin";
+import { getAdminOrNull } from "@/lib/auth/session";
 import { normalizeUsername, usernameToEmail } from "@/lib/auth/username";
 import { sendPasswordResetEmail } from "@/lib/auth/password-reset";
 
-async function assertAdmin() {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
-  const { data: user } = await supabase.auth.getUser();
-  if (!user.user) return false;
-  const { data: staff } = await supabase
+const LAST_ADMIN_ERROR =
+  "Ne možete ukloniti poslednjeg aktivnog administratora.";
+
+async function countActiveAdmins(
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<number> {
+  const { count } = await admin
     .from("staff")
-    .select("role, active")
-    .eq("id", user.user.id)
-    .single();
-  return staff?.role === "admin" && staff?.active;
+    .select("*", { count: "exact", head: true })
+    .eq("role", "admin")
+    .eq("active", true);
+  return count ?? 0;
 }
 
-// ── POST /api/admin/accounts — create a new worker account ──────────────────
+async function isLastActiveAdmin(
+  admin: ReturnType<typeof createAdminClient>,
+  staffId: string,
+): Promise<boolean> {
+  const { data: row } = await admin
+    .from("staff")
+    .select("role, active")
+    .eq("id", staffId)
+    .single();
 
-const createSchema = z.object({
-  action: z.literal("create"),
-  username: z.string().min(3),
-  password: z.string().min(8),
-  role: z.enum(["user", "admin"]),
-  recovery_email: z.string().email().optional().or(z.literal("")),
-});
+  if (!row || row.role !== "admin" || !row.active) return false;
+  return (await countActiveAdmins(admin)) <= 1;
+}
 
-// ── POST /api/admin/accounts — all other actions ─────────────────────────────
+const createSchema = z
+  .object({
+    action: z.literal("create"),
+    username: z.string().min(3),
+    password: z.string().min(8),
+    role: z.enum(["user", "admin"]),
+    recovery_email: z.string().email().optional().or(z.literal("")),
+  })
+  .superRefine((data, ctx) => {
+    if (data.role === "admin" && !data.recovery_email) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Email za oporavak je obavezan za admin nalog.",
+        path: ["recovery_email"],
+      });
+    }
+  });
 
 const mutateSchema = z.discriminatedUnion("action", [
   z.object({
@@ -57,7 +77,8 @@ const mutateSchema = z.discriminatedUnion("action", [
 ]);
 
 export async function POST(req: NextRequest) {
-  if (!(await assertAdmin())) {
+  const caller = await getAdminOrNull();
+  if (!caller) {
     return NextResponse.json({ error: "Nemate pristup." }, { status: 403 });
   }
 
@@ -68,7 +89,6 @@ export async function POST(req: NextRequest) {
 
   const admin = createAdminClient();
 
-  // --- Create account ---
   if (body.action === "create") {
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) {
@@ -82,10 +102,6 @@ export async function POST(req: NextRequest) {
     const username = normalizeUsername(rawUsername);
     const email = usernameToEmail(username);
 
-    // Role is NEVER passed via user_metadata — the handle_new_user trigger always
-    // creates a 'user' row. Admin role is granted below via an explicit service-role
-    // update (server-authoritative channel), so client-suppliable metadata can never
-    // escalate privileges even if public signup is enabled.
     const { data, error } = await admin.auth.admin.createUser({
       email,
       password,
@@ -103,7 +119,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }
 
-    // Grant admin role explicitly (trigger created the row as 'user').
     if (role === "admin") {
       const { error: roleError } = await admin
         .from("staff")
@@ -112,7 +127,9 @@ export async function POST(req: NextRequest) {
 
       if (roleError) {
         return NextResponse.json(
-          { error: `Nalog je kreiran, ali dodela admin uloge nije uspela: ${roleError.message}` },
+          {
+            error: `Nalog je kreiran, ali dodela admin uloge nije uspela: ${roleError.message}`,
+          },
           { status: 500 },
         );
       }
@@ -121,7 +138,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, id: data.user.id });
   }
 
-  // --- Other mutations ---
   const parsed = mutateSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -134,13 +150,15 @@ export async function POST(req: NextRequest) {
 
   switch (payload.action) {
     case "disable": {
+      if (await isLastActiveAdmin(admin, payload.staff_id)) {
+        return NextResponse.json({ error: LAST_ADMIN_ERROR }, { status: 400 });
+      }
       await admin
         .from("staff")
         .update({ active: false, updated_at: new Date().toISOString() })
         .eq("id", payload.staff_id);
-      // Optionally ban the auth user to invalidate tokens
       await admin.auth.admin.updateUserById(payload.staff_id, {
-        ban_duration: "876600h", // ~100 years
+        ban_duration: "876600h",
       });
       return NextResponse.json({ ok: true });
     }
@@ -157,6 +175,20 @@ export async function POST(req: NextRequest) {
     }
 
     case "set_role": {
+      const { data: target } = await admin
+        .from("staff")
+        .select("role")
+        .eq("id", payload.staff_id)
+        .single();
+
+      if (
+        target?.role === "admin" &&
+        payload.role === "user" &&
+        (await isLastActiveAdmin(admin, payload.staff_id))
+      ) {
+        return NextResponse.json({ error: LAST_ADMIN_ERROR }, { status: 400 });
+      }
+
       await admin
         .from("staff")
         .update({ role: payload.role, updated_at: new Date().toISOString() })
@@ -165,6 +197,18 @@ export async function POST(req: NextRequest) {
     }
 
     case "set_recovery_email": {
+      if (await isLastActiveAdmin(admin, payload.staff_id)) {
+        const { data: current } = await admin
+          .from("staff")
+          .select("recovery_email")
+          .eq("id", payload.staff_id)
+          .single();
+
+        if (current?.recovery_email && !payload.recovery_email) {
+          return NextResponse.json({ error: LAST_ADMIN_ERROR }, { status: 400 });
+        }
+      }
+
       await admin
         .from("staff")
         .update({
@@ -176,7 +220,6 @@ export async function POST(req: NextRequest) {
     }
 
     case "reset_password": {
-      // Fetch username for reset
       const { data: staffRow } = await admin
         .from("staff")
         .select("username, recovery_email")
@@ -184,7 +227,10 @@ export async function POST(req: NextRequest) {
         .single();
 
       if (!staffRow?.username) {
-        return NextResponse.json({ error: "Radnik nije pronađen." }, { status: 404 });
+        return NextResponse.json(
+          { error: "Radnik nije pronađen." },
+          { status: 404 },
+        );
       }
 
       if (!staffRow.recovery_email) {

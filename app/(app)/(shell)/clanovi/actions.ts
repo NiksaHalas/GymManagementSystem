@@ -11,11 +11,15 @@ import type { MemberSearchRow } from "@/lib/members/types";
 const MEMBERS_PAGE_SIZE = 50;
 
 const PHONE_TAKEN_ERROR = "Broj telefona već postoji kod drugog člana.";
+const RESTORE_ADMIN_ONLY_ERROR = "Samo administrator može vratiti člana iz arhive.";
 
-/** Maps the unique-phone constraint violation to a readable message; otherwise the raw error. */
+/** Maps DB constraint/trigger violations to readable messages; otherwise the raw error. */
 function mapMemberWriteError(error: { code?: string; message: string }): string {
   if (error.code === "23505" || error.message.includes("member_phone_digits_uidx")) {
     return PHONE_TAKEN_ERROR;
+  }
+  if (error.code === "42501") {
+    return RESTORE_ADMIN_ONLY_ERROR;
   }
   return error.message;
 }
@@ -199,7 +203,7 @@ export async function archiveMember(id: string): Promise<ActionResult> {
   return { ok: true };
 }
 
-/** Restores an archived member. Admin-only (enforced at app level). */
+/** Restores an archived member. Admin-only (app requireAdmin + DB trigger). */
 export async function restoreMember(id: string): Promise<ActionResult> {
   const staff = await requireAdmin();
   const supabase = await getClient();
@@ -209,7 +213,7 @@ export async function restoreMember(id: string): Promise<ActionResult> {
     .update({ archived: false, archived_at: null, updated_by: staff.id })
     .eq("id", id);
 
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: mapMemberWriteError(error) };
 
   revalidatePath("/clanovi");
   revalidatePath(`/clanovi/${id}`);

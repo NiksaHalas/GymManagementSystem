@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.8
+Version: 1.9
 Date: 2026-06-18
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -14,6 +14,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.6 records the **first production deployment** (Vercel project `gym-management-system` → `https://gym-management-system-five-ashy.vercel.app`, Supabase `qkmrssvfeljfkqbbxfpr`) and the **migration-ledger reconcile** (MCP-applied versions re-aligned to repo files via `db reset` + `migration repair`). Adds the localhost guard in `push-supabase-auth-config.mjs`, `vercel.json` `fra1` region, the `supabase` CLI devDependency, and the **deployment incidents & lessons** in §9. Phase 0 smoke (auth reset, shift attribution, admin reconcile) verified live on 2026-06-18.
 > v1.7 records **Phase 0 security hardening** (2026-06-18, applied live): (1) `handle_new_user` no longer trusts client-suppliable `role` metadata — admin role granted via explicit service-role update in `accounts/route.ts` + `seed-admins.mjs` (§3.3); (2) Auth config `disable_signup` + `password_min_length=8` pushed via `push-supabase-auth-config.mjs` (leaked-password/HIBP gated behind `ENABLE_HIBP` — Pro plan; §10), and `site_url` precedence fixed to prefer the inline env var; (3) `open_or_resume_shift()` → `SECURITY DEFINER`, `shift_select_open` policy dropped (§5; `DB.md` §12.1); (4) login rate-limit gains a per-username global cap alongside username+IP (§3.1); (5) `rls_auto_enable()` RPC execute revoked. New helper `scripts/set-admin-password.mjs` for service-role password rotation. Schema deltas in `DB.md` v1.9 (migrations `20260618120000`–`20260618120200`).
 > v1.8 records **Phase 1a Members fixes** (2026-06-18): phone is now **unique** (DB constraint `member_phone_digits_uidx`; the duplicate-phone soft warning and `checkPhoneDuplicate` server action are removed, the `23505` violation mapped to a friendly error in `clanovi/actions.ts`); the member card adds an **"Istorija članarina"** section and shows **"Istekla"** for an expired latest membership; the members list shows "Istekla" too via the recreated `search_members` (§7). Schema deltas in `DB.md` v1.10 (migrations `20260618130000`–`20260618131000`, applied via `supabase db push`).
+> v1.9 records **Phase 1a Members review closure** (2026-06-18): **restore (unarchive) is DB-enforced** via `member_restore_admin_guard` / `enforce_member_restore_admin()` (`DB.md` §3.3, §5.1); app `requireAdmin()` on `restoreMember` remains defense-in-depth. Custom price is per-payment and intentionally shown only in payment history, not as a card field (PRD §3.3). Migration `20260618132000`, applied via `supabase db push`.
 
 ---
 
@@ -238,8 +239,12 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 
 ### 3.1 Username + password (no public email)
 - Supabase Auth requires an email identity, so each worker maps to a **synthetic internal email**: `"<username>@gym.local"` (domain is internal, never sent mail). Helpers in `lib/auth/username.ts` normalize (trim + lowercase), validate (letters/digits/`._-`, min 3), and map `username → email`.
-- Login flow (`app/(auth)/login/actions.ts`): the UI takes `username` + `password`, the server maps `username → synthetic email`, calls `supabase.auth.signInWithPassword`, then checks `staff.active` (disabled accounts are signed back out and rejected).
-- **Rate limiting:** failed attempts are recorded in the `login_attempt` table under **two keys** — per `username + IP` (**≥ 5 fails / 15 min**) and per `username` across all IPs (**≥ 20 fails / 15 min**, defeats IP rotation). Login is blocked if **either** threshold is hit; a successful login clears both keys. (Uses the service-role client; see `DB.md` §3.13.)
+- Login flow (`app/(auth)/login/actions.ts`): the UI takes `username` + `password`, validates format via `validateUsername()`, maps `username → synthetic email`, calls `supabase.auth.signInWithPassword`, then checks `staff.active`. Disabled accounts receive the **same generic error** as a wrong password (no enumeration).
+- **Rate limiting** (`lib/auth/rate-limit.ts`, `login_attempt` table): three prefixed flows share thresholds **≥ 5 / 15 min** (per username+IP) and **≥ 20 / 15 min** (per username globally):
+  - **`login:`** — failed sign-in; cleared on success.
+  - **`reset:`** — every forgot-password request (anti-spam; UI always success).
+  - **`switch:`** — failed switch-worker password; cleared on success.
+  See `DB.md` §3.13.
 - A `staff` profile row (see `DB.md`) is linked 1:1 to `auth.users.id` and stores `username`, `role`, `recovery_email`, and `active`.
 
 ### 3.2 Password reset (Resend)
@@ -254,17 +259,22 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 ### 3.3 Roles
 - Two roles: `user` and `admin`, stored on the `staff` row.
 - **Database-level**: Postgres **RLS** policies enforce access (e.g. only Admins can read monthly/yearly aggregates, manage accounts, or edit past-day logs). RLS reads the caller's role via a helper that joins `auth.uid()` to `staff.role`.
-- **App-level**: the root `middleware.ts` redirects unauthenticated requests to `/login`; `requireUser()` / `requireAdmin()` (`lib/auth/session.ts`) guard the `(app)` shell and Admin-only segments (`/nalozi`, `/smene`). This is a UX layer on top of (never instead of) RLS.
+- **App-level**: the root `middleware.ts` redirects unauthenticated requests to `/login`; `requireUser()` / `requireAdmin()` / `getAdminOrNull()` (`lib/auth/session.ts`) guard the `(app)` shell and Admin-only segments (`/nalozi`, `/smene`). API routes use `getAdminOrNull()` for JSON 403. This is a UX layer on top of (never instead of) RLS.
 - **Public vs guest-only auth paths** (`middleware.ts`):
   - **`PUBLIC_PATHS`** — `/login`, `/zaboravljena-lozinka`, `/reset`, `/auth/callback`: reachable without a session.
   - **`GUEST_ONLY_AUTH_PATHS`** — `/login`, `/zaboravljena-lozinka` only: authenticated users are redirected to `/`.
   - **`/reset`** and **`/auth/callback`** stay accessible during password recovery (a recovery session must not be redirected away before the new password is set).
 - **Account management**: Admins create/disable/enable workers, set role, set recovery email, and trigger password resets via the `(app)/nalozi` page → `app/api/admin/accounts/route.ts` (service-role admin client). New accounts are created with a **permanent password set by the Admin** (no forced change on first login); `createUser` passes only `username`/`recovery_email` as metadata (the `handle_new_user` trigger links the `staff` row as `'user'`). **Role is never trusted from client-suppliable metadata** — when creating an admin, the route runs an explicit service-role `update staff set role='admin'` after `createUser` (same pattern in `scripts/seed-admins.mjs`). Public signup is disabled in Auth config so synthetic `@gym.local` accounts can only originate from this service-role channel. See `DB.md` §3.1.
 
-### 3.4 Counter device vs. remote (view-only) — device binding
-- Whether a login is a **counter session** (opens a shift) or a **remote view-only** session (no shift) is decided by **device binding**, not by which URL was used (URLs are convention-only and can be misused).
-- The counter PC is marked once via an Admin-only action that writes a **signed, httpOnly `gym_counter` cookie** (HMAC-SHA256 over `COUNTER_DEVICE_SECRET`, 1-year TTL). `lib/auth/counter.ts` exposes `isCounterDevice()`, `setCounterDevice()`, `unsetCounterDevice()`; the toggle lives on the Accounts page.
-- On a counter device, the `(app)` layout auto-ensures an open shift on each load. On any other device the cookie is absent, so **no shift is created** — this is how an Admin logging in from home gets the read-only overview.
+### 3.4 Counter device vs. remote — device binding
+- Whether a login opens a shift is decided by **device binding** (signed `gym_counter` cookie), not by URL.
+- The counter PC is marked via Admin action on `/nalozi` (`lib/auth/counter.ts`: HMAC-SHA256, httpOnly, 1-year TTL).
+- **Route groups** (`app/(app)/`):
+  - **`(shell)/`** — sidebar shell; gate in `(shell)/layout.tsx`:
+    - **Worker + counter cookie** → full operations; `openOrResumeShift()` on load.
+    - **Admin + no counter** → remote admin: dashboard overview, članovi CRUD, cene, nalozi, pazar read/export/reconcile; **no** check-in/uplata (`requireCounterToday()`).
+    - **Worker + no counter** → redirect to `/samo-salter` (no sidebar).
+  - **`/samo-salter`** — minimal page for workers off-counter (message + logout only).
 
 ### 3.5 Session reads & Auth API rate limits
 - **Security**: never trust `getSession()` / cookie JWT alone — use **`getUser()`**, which validates the token with Supabase Auth.
@@ -291,11 +301,11 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 
 - A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/` and delegates mutations to Postgres RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, and **`end_shift()`** (`DB.md` §12; migration `20260617100700_shift_attribution`). **`ensure_open_shift()` is removed** — no auto-handover on login.
 - **Atribucija:** `checkin` and `payment` rows store `staff_id = auth.uid()` always; nullable `shift_id` (assigned when caller has an open shift); `waived_at` / `waived_by` for admin-resolved gaps. Pending badge: `shift_id IS NULL AND waived_at IS NULL AND created_at >= SHIFT_ATTRIBUTION_LAUNCH_AT` (default = migration launch; see `lib/shifts/config.ts`).
-- **Counter layout (fail-open):** `(app)/layout` calls `openOrResumeShift()` with transient retry. Returns `opened`/`resumed` → OK; `foreign_shift_open` → `ShiftAttributionBanner` + CTA **Preuzmi smenu** (`handover_shift()`); permanent errors also show banner. Check-in/payment still work with `shift_id NULL`.
+- **Counter layout (fail-open):** `(shell)/layout` calls `openOrResumeShift()` with transient retry. Returns `opened`/`resumed` → OK; `foreign_shift_open` → `ShiftAttributionBanner` + CTA **Preuzmi smenu**; check-in/payment still work with `shift_id NULL`.
+- **Sign-out ≠ end shift:** plain logout only clears auth; on counter, logout prompts **Završi smenu** when `has_open_shift()` is true (`hasOpenShiftAction()`).
 - **Open / resume:** `open_or_resume_shift()` (**SECURITY DEFINER** since v1.7 hardening; was INVOKER) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally. DEFINER means non-admin workers need **no SELECT on `shift`** (the `shift_select_open` RLS policy was dropped — `DB.md` §12.1).
 - **Handover:** `handoverShiftAction()` / `switchWorkerAction()` call **`handover_shift()`** (**DEFINER**, `FOR UPDATE`) — atomic close (`switch`) + open. Switch worker still requires password sign-in first.
 - **End shift (manual):** `endShiftAction()` → INVOKER `end_shift()` (`ended_reason = 'logout'`); worker **stays signed in**.
-- **Sign-out ≠ end shift:** plain logout only clears the auth session.
 - **Admin reconcile:** badge in sidebar/header; `/dashboard?unassigned=1` and `/pazar?unassigned=1` with assign/waive actions (`lib/shifts/reconcile-actions.ts`).
 - **Counter guard:** `isCounterDevice()` — remote admin sessions skip shift RPCs and banner.
 - **Safety net:** `pg_cron` `auto_close_shifts()` — see `DB.md` §8.
@@ -331,7 +341,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 
 | Feature (PRD) | Implementation |
 |---|---|
-| Members list + search + virtual card | **(implemented)** `(app)/clanovi`: paginated/fuzzy search via the `search_members` RPC (`DB.md` §9), create/edit dialogs (`react-hook-form` + Zod, **unique phone** — DB constraint `member_phone_digits_uidx`; the `23505` violation is mapped to the friendly "Broj telefona već postoji kod drugog člana." in `clanovi/actions.ts`), and a virtual-card page (`clanovi/[id]`) showing status (incl. **"Istekla"** when the latest membership has expired), current membership, an **"Istorija članarina"** section listing past/expired memberships (type · start–end · status), payment/session history, reserved (owed) sessions with the warn-after-3 marker, quick discount toggle + comment editor, and archive/restore (archive blocked while owed sessions are unsettled; restore Admin-only). The list also shows **"Istekla"** — `search_members` surfaces expired memberships (`DB.md` §9). Status is derived at read time in `lib/members/status.ts`. Server actions in `clanovi/actions.ts` set audit columns (`created_by`/`updated_by`) for RLS |
+| Members list + search + virtual card | **(implemented)** `(app)/clanovi`: paginated/fuzzy search via the `search_members` RPC (`DB.md` §9), create/edit dialogs (`react-hook-form` + Zod, **unique phone** — DB constraint `member_phone_digits_uidx`; the `23505` violation is mapped to the friendly "Broj telefona već postoji kod drugog člana." in `clanovi/actions.ts`), and a virtual-card page (`clanovi/[id]`) showing status (incl. **"Istekla"** when the latest membership has expired), current membership, an **"Istorija članarina"** section listing past/expired memberships (type · start–end · status), payment/session history (custom price per payment shown as discount badge in **"Istorija uplata"** — no separate card field; PRD §3.3), reserved (owed) sessions with the warn-after-3 marker, quick discount toggle + comment editor, and archive/restore (archive blocked while owed sessions are unsettled; restore **Admin-only**, DB-enforced via `member_restore_admin_guard` trigger + app `requireAdmin()`). The list also shows **"Istekla"** — `search_members` surfaces expired memberships (`DB.md` §9). Status is derived at read time in `lib/members/status.ts`. Server actions in `clanovi/actions.ts` set audit columns (`created_by`/`updated_by`) for RLS |
 | Daily check-in dashboard | **(implemented v1)** `(app)/dashboard`: see §2.3. Counter + today = full ops; remote Admin = overview; workers off-counter = read-only. Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10). Refresh via `router.refresh()` after mutations. |
 | Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows holder. **Key-number search UI** not yet built. |
 | Membership status badges | **(implemented)** on dashboard rows via member status; red "istekla članarina" marker |
@@ -434,7 +444,7 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 
 ## 11. Non-functional implementation notes
 - **Performance**: indexed search + server-side fetch; dashboard mutations call RPCs in one round-trip; `React.cache()` on session/client avoids redundant Auth API calls. React Query not yet used — pages refresh via `router.refresh()` after server actions.
-- **Security**: RLS is the primary guard; app guards are UX only. Service-role key stays server/local-side.
+- **Security**: RLS is the primary guard; app guards are UX only. Where RLS `WITH CHECK` cannot express OLD/NEW column comparisons (e.g. member restore: `archived` true→false Admin-only while archiving stays open to all workers), a **`BEFORE UPDATE` trigger** enforces the rule at the DB level (`member_restore_admin_guard` — `DB.md` §3.3, §5.1; PRD §3.3). Service-role key stays server/local-side.
 - **Audit**: `created_by`/`updated_by` + `created_at`/`updated_at` on mutable tables; past-day edits restricted to Admins by RLS.
 - **i18n/format**: Serbian latinica strings; RSD currency formatting; all timestamps stored as `timestamptz`, business day computed in `Europe/Belgrade`.
 - **Quality**: ESLint (`eslint-config-next`), TypeScript strict, Zod validation at the server boundary.

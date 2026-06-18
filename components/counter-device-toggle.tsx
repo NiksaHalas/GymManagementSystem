@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   setThisDeviceAsCounterAction,
   unsetCounterDeviceAction,
-} from "@/app/(app)/nalozi/counter-actions";
+} from "@/app/(app)/(shell)/nalozi/counter-actions";
 
 interface CounterDeviceToggleProps {
   isCounter: boolean;

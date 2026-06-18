@@ -45,6 +45,14 @@ export function AccountsTable({ staff }: AccountsTableProps) {
   const [pending, setPending] = React.useState<string | null>(null);
   const [editEmailFor, setEditEmailFor] = React.useState<Staff | null>(null);
 
+  const activeAdminCount = staff.filter(
+    (s) => s.role === "admin" && s.active,
+  ).length;
+
+  function isLastActiveAdmin(s: Staff): boolean {
+    return s.role === "admin" && s.active && activeAdminCount <= 1;
+  }
+
   async function handle(
     action: string,
     staffId: string,
@@ -139,6 +147,7 @@ export function AccountsTable({ staff }: AccountsTableProps) {
                             role: s.role === "admin" ? "user" : "admin",
                           })
                         }
+                        disabled={isLastActiveAdmin(s) && s.role === "admin"}
                       >
                         {s.role === "admin" ? (
                           <>
@@ -158,6 +167,7 @@ export function AccountsTable({ staff }: AccountsTableProps) {
                       {s.active ? (
                         <DropdownMenuItem
                           onClick={() => handle("disable", s.id)}
+                          disabled={isLastActiveAdmin(s)}
                           className="text-destructive focus:text-destructive"
                         >
                           <UserX className="mr-2 h-4 w-4" />

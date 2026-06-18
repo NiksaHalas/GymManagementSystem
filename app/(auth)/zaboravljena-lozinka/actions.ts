@@ -2,6 +2,11 @@
 
 import { normalizeUsername } from "@/lib/auth/username";
 import { sendPasswordResetEmail } from "@/lib/auth/password-reset";
+import {
+  buildRateLimitKeys,
+  isRateLimited,
+  recordRateLimitAttempt,
+} from "@/lib/auth/rate-limit";
 
 /**
  * Self-service password reset action.
@@ -12,6 +17,16 @@ export async function requestPasswordResetAction(
 ): Promise<void> {
   const username = normalizeUsername(rawUsername);
   if (!username) return;
+
+  const rateLimitKeys = await buildRateLimitKeys("reset", username);
+  if (await isRateLimited(rateLimitKeys)) {
+    // Always appear successful — do not reveal lockout state.
+    return;
+  }
+
+  // Count every request (anti-spam; UI always shows success).
+  await recordRateLimitAttempt(rateLimitKeys);
+
   try {
     await sendPasswordResetEmail(username);
   } catch (err) {
@@ -20,6 +35,7 @@ export async function requestPasswordResetAction(
         "[password-reset:dev] unhandled error in requestPasswordResetAction",
         err instanceof Error ? err.message : err,
       );
+      throw err;
     }
   }
 }

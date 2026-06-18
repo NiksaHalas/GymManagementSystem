@@ -23,7 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { editPayment, voidPayment } from "@/app/(app)/pazar/actions";
+import { editPayment, voidPayment } from "@/app/(app)/(shell)/pazar/actions";
 import type { PaymentRow } from "@/lib/pazar/types";
 
 interface PaymentRowActionsProps {

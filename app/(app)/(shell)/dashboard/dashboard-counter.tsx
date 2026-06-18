@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { DateNav } from "@/app/(app)/dashboard/date-nav";
-import { SoonExpireBadge } from "@/app/(app)/dashboard/soon-expire-badge";
-import { CheckinSearch } from "@/app/(app)/dashboard/checkin-search";
-import { CheckinDialog } from "@/app/(app)/dashboard/checkin-dialog";
-import { FitpassDialog } from "@/app/(app)/dashboard/fitpass-dialog";
-import { ArrivalsTable } from "@/app/(app)/dashboard/arrivals-table";
-import { KeysPanel } from "@/app/(app)/dashboard/keys-panel";
+import { DateNav } from "@/app/(app)/(shell)/dashboard/date-nav";
+import { SoonExpireBadge } from "@/app/(app)/(shell)/dashboard/soon-expire-badge";
+import { CheckinSearch } from "@/app/(app)/(shell)/dashboard/checkin-search";
+import { CheckinDialog } from "@/app/(app)/(shell)/dashboard/checkin-dialog";
+import { FitpassDialog } from "@/app/(app)/(shell)/dashboard/fitpass-dialog";
+import { ArrivalsTable } from "@/app/(app)/(shell)/dashboard/arrivals-table";
+import { KeysPanel } from "@/app/(app)/(shell)/dashboard/keys-panel";
 import { PaymentDialog } from "@/components/payment/payment-dialog";
 import type {
   DashboardCheckinRow,

@@ -16,10 +16,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { searchMembersForCheckin } from "@/app/(app)/dashboard/actions";
+import { searchMembersForCheckin } from "@/app/(app)/(shell)/dashboard/actions";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";
 import type { MemberSearchRow } from "@/lib/members/types";
-import { CreateMemberDialog } from "@/app/(app)/clanovi/create-member-dialog";
+import { CreateMemberDialog } from "@/app/(app)/(shell)/clanovi/create-member-dialog";
 
 interface CheckinSearchProps {
   onSelectMember: (memberId: string) => void;

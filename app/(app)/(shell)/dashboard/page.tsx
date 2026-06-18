@@ -9,8 +9,8 @@ import {
   fetchActiveStaff,
 } from "@/lib/dashboard/queries";
 import { fetchShiftsForBusinessDay } from "@/lib/shifts/queries";
-import { DashboardCounter } from "@/app/(app)/dashboard/dashboard-counter";
-import { DashboardOverview } from "@/app/(app)/dashboard/dashboard-overview";
+import { DashboardCounter } from "@/app/(app)/(shell)/dashboard/dashboard-counter";
+import { DashboardOverview } from "@/app/(app)/(shell)/dashboard/dashboard-overview";
 
 export const metadata = {
   title: "Dashboard — Teretana",
@@ -74,12 +74,6 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       {unassignedOnly && isAdmin && (
         <div className="mb-4 rounded-md border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm">
           Prikaz samo dolazaka bez dodeljene smene (od lansiranja atribucije).
-        </div>
-      )}
-      {!counter && !unassignedOnly && (
-        <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
-          Operacije (check-in, Fitpass) su dostupne samo na šalteru. Prikaz je
-          samo za pregled.
         </div>
       )}
       <DashboardCounter

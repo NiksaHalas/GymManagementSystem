@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.10
+Version: 1.11
 Date: 2026-06-18
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -15,6 +15,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.9 — **Phase 0 security hardening** (2026-06-18). Migrations `20260618120000`–`20260618120200`: (1) `handle_new_user` no longer reads `role` from client-suppliable `raw_user_meta_data` — always seeds `'user'`; admin role is granted via a server-authoritative service-role update (see §3.1, `Tech.md` §3.3). (2) `open_or_resume_shift()` switched INVOKER → **`SECURITY DEFINER`** and the `shift_select_open` RLS policy dropped, so non-admin workers have no SELECT on `shift` (least privilege; §3.2, §12.1). (3) `EXECUTE` on the `rls_auto_enable()` event-trigger function revoked from `anon`/`authenticated`/`public` (Supabase advisor 0028/0029). Auth GoTrue config also hardened (`disable_signup`, `password_min_length=8`; leaked-password/HIBP pending Pro plan) — `Tech.md` §3/§10.
 > v1.8 — **no schema change.** Records the **migration-ledger reconcile** (2026-06-18). Migrations had been applied via Supabase **MCP `apply_migration`**, which stamps the remote ledger with its own execution timestamp instead of the migration filename's — so the remote `supabase_migrations` ledger drifted from the repo files (mismatched versions, a duplicated `shift_attribution`, and a `login_attempt` table created outside the recorded ledger). The repo migration files remain the **source of truth** and were confirmed to cleanly rebuild the full schema (`supabase db reset`; `db diff --linked` showed only Supabase-managed noise — `pg_net`, default-privilege `anon` grants, migra function re-emission — **never apply the diff's `DROP EXTENSION pg_net` to remote**). The remote ledger was re-aligned **1:1** with the repo via `supabase migration repair`. Going forward prefer `supabase db push` over MCP to keep the ledger in sync. See `Tech.md` §9 (Deployment incidents & lessons).
 > v1.10 — **Phase 1a Members fixes** (2026-06-18). Migrations `20260618130000`–`20260618131000`: (1) `member_phone_digits_uidx` — a **functional unique index** on `regexp_replace(phone, '\D', '', 'g')` making phone unique by normalized digits, globally incl. archived (§3.3, §7); replaces the previous "NOT unique / family sharing" rule. App maps the `23505` violation to a readable message. (2) `search_members` recreated (same 4-arg signature/grants) so its `active_m` CTE also surfaces `istekla` memberships for the list status (§9). Applied via `supabase db push`.
+> v1.11 — **Phase 1a Members review closure** (2026-06-18). Migration `20260618132000`: **`member_restore_admin_guard`** trigger + **`enforce_member_restore_admin()`** — restore (`archived` true→false) allowed only when `is_admin()`; archiving (false→true) remains open to any authenticated worker. The `member_update` RLS policy stays `using (true) / with check (updated_by = auth.uid())` because RLS `WITH CHECK` cannot compare OLD vs NEW; the trigger is the authoritative guard (see §5.1, §3.3). Applied via `supabase db push`.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -192,6 +193,8 @@ create trigger member_assign_no
   for each row execute function assign_member_no();
 ```
 - Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
+
+**Restore admin-only (migration `20260618132000`):** a `BEFORE UPDATE` trigger `member_restore_admin_guard` calls `enforce_member_restore_admin()` when `archived` changes. If `OLD.archived = true` and `NEW.archived = false` and the caller is not an admin (`is_admin()`), the update raises `42501` (*insufficient privilege*). Archiving (`false→true`) and other field updates are unaffected. The `member_update` RLS policy remains open so any worker can archive; restore is gated only by the trigger (RLS `WITH CHECK` cannot express OLD/NEW comparisons — see §5.1).
 
 ### 3.4 `training_category`
 Runtime-manageable training categories (replaces the former `training_type` enum). Admins can add categories; seeded with the five original types.
@@ -464,12 +467,12 @@ select generate_series(1, 22);
 - Current/last holder is **derived from `checkin`** (latest assignment), not stored here.
 
 ### 3.13 `login_attempt`
-Rate-limiting ledger for failed logins. Written/read **only by the service-role client** (the login server action), never by the browser.
+Rate-limiting ledger for auth-related throttling. Written/read **only by the service-role client** (server actions), never by the browser.
 
 ```sql
 create table login_attempt (
   id            bigint generated always as identity primary key,
-  attempt_key   text not null,     -- "login:<username>:<ip>"
+  attempt_key   text not null,     -- prefixed key (see below)
   attempted_at  timestamptz not null default now()
 );
 
@@ -482,7 +485,17 @@ grant all on login_attempt to service_role;
 alter table login_attempt enable row level security;
 alter table login_attempt force row level security;
 ```
-- The login action records one row per failed attempt keyed by `username + IP`. Login is blocked when **≥ 5 failed attempts** fall within a **15-minute** window; successful login clears the rows for that key.
+
+**Key prefixes** (each flow uses a per-`(username+IP)` key and a per-username global key):
+
+| Prefix | Flow | Counted when |
+|---|---|---|
+| `login:` / `login-uname:` | Sign-in | Failed password only |
+| `reset:` / `reset-uname:` | Forgot password | Every request (anti-spam; UI always shows success) |
+| `switch:` / `switch-uname:` | Switch worker | Failed password only |
+
+**Thresholds** (all flows): **≥ 5** attempts per `(prefix, username, IP)` or **≥ 20** per `(prefix-uname, username)` within a **15-minute** sliding window. Successful login/switch clears both keys for that prefix; reset does not clear (by design).
+
 - RLS is `enable`d + `force`d with **no policies** by design — `anon`/`authenticated` are revoked, and `service_role` bypasses RLS. (Supabase's linter flags this as INFO `rls_enabled_no_policy`, which is expected here.)
 
 ---
@@ -593,6 +606,8 @@ All policies target the `authenticated` role (`anon` has no table grants):
 | `staff` | `id = auth.uid() or is_admin()` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `shift` | `is_admin()` | `staff_id = auth.uid() or is_admin()` | `staff_id = auth.uid() or is_admin()` (both) | — |
 | `member` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
+
+> **`member` restore vs archive:** the UPDATE policy allows any authenticated worker to update any member row (audit via `updated_by`). Archiving (`archived` false→true) is intentionally open to all workers (PRD §2). **Restore** (`archived` true→false) is **Admin-only** and enforced by the `member_restore_admin_guard` trigger (`enforce_member_restore_admin()` — migration `20260618132000`), because RLS `WITH CHECK` cannot compare OLD and NEW column values.
 | `membership` | `true` | `created_by = auth.uid()` | `true` / `updated_by = auth.uid()` | `is_admin()` |
 | `membership_type` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
 | `training_category` | `true` | `is_admin()` | `is_admin()` / `is_admin()` | `is_admin()` |
@@ -803,6 +818,9 @@ Counter-device binding (`gym_counter` cookie) is enforced in the app layer (`lib
 
 ### 12.3 `end_shift() → void`
 **SECURITY INVOKER.** Closes authenticated worker's open shift (`ended_reason = 'logout'`). Does **not** sign out of Supabase Auth.
+
+### 12.3a `has_open_shift() → boolean`
+**SECURITY DEFINER** (migration `20260618140000`). Read-only check whether `auth.uid()` has an open shift. Used by the logout prompt on counter devices. `EXECUTE` granted to `authenticated` only.
 
 ### 12.4 Shift attribution on writes
 `create_checkin` and `record_payment` set `shift_id` from `SELECT id FROM shift WHERE ended_at IS NULL AND staff_id = auth.uid()` (nullable if none). Pending rows: `shift_id IS NULL AND waived_at IS NULL`. Admin reconcile sets `shift_id` or `waived_at`/`waived_by`.

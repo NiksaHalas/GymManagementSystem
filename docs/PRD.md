@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.7
+Version: 1.8
 Date: 2026-06-18
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -11,6 +11,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.5 notes **Phase 0 auth/shift hardening** delivered in code (shift RPCs, password reset SSR callback, login-attempt cleanup) — see `Tech.md` v1.4 / `DB.md` v1.6.
 > v1.6 notes **Phase 0 live in production** (deployed 2026-06-18): login, worker password reset (email link confirmed to point to the production site, not a dev address), shift tracking, and the Admin reconcile of un-attributed check-ins/payments were all verified end-to-end on the live site. Technical deployment notes — and an explanation of the deployment issues that were fixed along the way — are in `Tech.md` §9; the migration-history reconcile is in `DB.md` v1.8.
 > v1.7 records **Phase 1a Members fixes**: phone is now **unique across all members** (incl. archived) — the old "family sharing / soft duplicate warning" rule is dropped in favour of a hard, database-enforced block with a readable message (§3.3, §8); the member card and members list now show **"Istekla"** for expired memberships and add a **"Istorija članarina"** history section. See `DB.md` v1.10 / `Tech.md` v1.8.
+> v1.8 records **Phase 1a Members review closure**: restore (unarchive) is **Admin-only and DB-enforced** via a `BEFORE UPDATE` trigger (§3.3); **custom price** is intentionally shown only in payment history (per-payment `is_custom_price`/`custom_reason`), not as a separate card field (§3.3). See `DB.md` v1.11 / `Tech.md` v1.9.
 
 ---
 
@@ -92,13 +93,13 @@ Card fields:
 - Phone number (**required and unique across members**, including archived). Each member has their own number; entering a number already on file is **blocked with a readable message** ("Broj telefona već postoji kod drugog člana."). Uniqueness is by normalized digits (ignores spaces/dashes/`+`) and enforced in the database.
 - Current membership: type, payment date, start date, end date, remaining sessions (if a package), status (active / expired / paused / no membership). When the latest membership has expired, the card and the members list show **"Istekla"** (not "no membership"), and a **"Istorija članarina"** section lists past/expired memberships (type · start–end · status).
 - Discount flag (family / school) — yes/no. **Any worker can toggle it.**
-- Custom price — if one exists.
+- Custom price — if one exists. *(Product note: custom price is **per payment** (`is_custom_price` / optional `custom_reason` on each cash payment — see `DB.md` §3.8), not a standing attribute on the member. There is no single "active custom price" per member with clear semantics, so the card **does not** show a separate custom-price field; discounted payments appear in **"Istorija uplata"** with a discount badge.)*
 - Comment (special needs).
 - **History**: previous memberships, payment history, session history (trainer-session dates), reserved/owed sessions.
 
 Rules:
 - A member **can be created without a membership** (status "no membership").
-- Deletion is **soft (archiving)** — the member disappears from active lists but history is preserved. **An Admin can restore (unarchive) a member.**
+- Deletion is **soft (archiving)** — the member disappears from active lists but history is preserved. **An Admin can restore (unarchive) a member** — enforced at the database level (only Admins may set `archived` from `true` to `false`; any worker may still archive).
 - Member numbers are **never reused**, even after archiving.
 
 ### 3.4 Memberships — model & rules

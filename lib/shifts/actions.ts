@@ -6,7 +6,18 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { isCounterDevice } from "@/lib/auth/counter";
 import { getCurrentStaff } from "@/lib/auth/session";
-import { usernameToEmail } from "@/lib/auth/username";
+import {
+  buildRateLimitKeys,
+  clearRateLimitAttempts,
+  isRateLimited,
+  rateLimitLockoutMessage,
+  recordRateLimitAttempt,
+} from "@/lib/auth/rate-limit";
+import {
+  normalizeUsername,
+  usernameToEmail,
+  validateUsername,
+} from "@/lib/auth/username";
 import { isTransientSupabaseError } from "@/lib/shifts/errors";
 
 const COUNTER_REQUIRED_MSG =
@@ -133,6 +144,8 @@ export async function endShiftAction(): Promise<void> {
 /**
  * Server action: switch worker — sign in incoming worker, then handover_shift only.
  */
+const GENERIC_AUTH_ERROR = "Neispravno korisničko ime ili lozinka.";
+
 export async function switchWorkerAction(
   username: string,
   password: string,
@@ -141,15 +154,27 @@ export async function switchWorkerAction(
     return { error: COUNTER_REQUIRED_MSG };
   }
 
+  const normalized = normalizeUsername(username);
+  const usernameError = validateUsername(normalized);
+  if (usernameError) {
+    return { error: GENERIC_AUTH_ERROR };
+  }
+
+  const rateLimitKeys = await buildRateLimitKeys("switch", normalized);
+  if (await isRateLimited(rateLimitKeys)) {
+    return { error: rateLimitLockoutMessage() };
+  }
+
   const cookieStore = await cookies();
   const supabase = createClient(cookieStore);
 
-  const email = usernameToEmail(username.trim().toLowerCase());
+  const email = usernameToEmail(normalized);
   const { data: authData, error: signInError } =
     await supabase.auth.signInWithPassword({ email, password });
 
   if (signInError || !authData.user) {
-    return { error: "Neispravno korisničko ime ili lozinka." };
+    await recordRateLimitAttempt(rateLimitKeys);
+    return { error: GENERIC_AUTH_ERROR };
   }
 
   const { data: newStaff } = await supabase
@@ -160,8 +185,10 @@ export async function switchWorkerAction(
 
   if (!newStaff?.active) {
     await supabase.auth.signOut();
-    return { error: "Nalog je deaktiviran." };
+    return { error: GENERIC_AUTH_ERROR };
   }
+
+  await clearRateLimitAttempts(rateLimitKeys);
 
   const { error: shiftError } = await supabase.rpc("handover_shift");
 
@@ -184,4 +211,22 @@ export async function signOutAction(): Promise<void> {
   const supabase = createClient(cookieStore);
   await supabase.auth.signOut();
   redirect("/login");
+}
+
+/** Returns true if the current worker has an open shift (counter logout prompt). */
+export async function hasOpenShiftAction(): Promise<boolean> {
+  if (!(await isCounterDevice())) {
+    return false;
+  }
+
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+  const { data, error } = await supabase.rpc("has_open_shift");
+
+  if (error) {
+    console.error("[hasOpenShiftAction]", error.message);
+    return false;
+  }
+
+  return data === true;
 }

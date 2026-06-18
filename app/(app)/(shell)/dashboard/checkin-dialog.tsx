@@ -34,7 +34,7 @@ import {
 import {
   createMemberCheckin,
   getMemberCheckinContext,
-} from "@/app/(app)/dashboard/actions";
+} from "@/app/(app)/(shell)/dashboard/actions";
 import type { CheckinMemberContext, StaffOption } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";

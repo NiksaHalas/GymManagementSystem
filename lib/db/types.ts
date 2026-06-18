@@ -911,6 +911,7 @@ export type Database = {
         }
       }
       end_shift: { Args: never; Returns: undefined }
+      has_open_shift: { Args: never; Returns: boolean }
       handover_shift: { Args: never; Returns: undefined }
       is_admin: { Args: never; Returns: boolean }
       offered_membership_price: {

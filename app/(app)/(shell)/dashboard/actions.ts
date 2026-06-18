@@ -17,7 +17,7 @@ import {
   fetchCheckinMemberContext,
   countOpenKeysToday,
 } from "@/lib/dashboard/queries";
-import { searchMembers } from "@/app/(app)/clanovi/actions";
+import { searchMembers } from "@/app/(app)/(shell)/clanovi/actions";
 
 type ActionError = { ok: false; error: string };
 type ActionOk<T = undefined> = T extends undefined

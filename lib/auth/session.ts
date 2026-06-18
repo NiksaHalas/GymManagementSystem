@@ -61,6 +61,16 @@ export async function requireUser(): Promise<Staff> {
 }
 
 /**
+ * Returns the current staff row if the caller is an active Admin, otherwise null.
+ * Use in API route handlers that should return JSON 403 instead of redirecting.
+ */
+export async function getAdminOrNull(): Promise<Staff | null> {
+  const staff = await getCurrentStaff();
+  if (!staff?.active || staff.role !== "admin") return null;
+  return staff;
+}
+
+/**
  * Asserts that the current user is an active Admin.
  * Redirects to /login or the dashboard if not authorized.
  */

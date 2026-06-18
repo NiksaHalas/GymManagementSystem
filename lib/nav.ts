@@ -15,10 +15,10 @@ export type NavItem = {
 };
 
 export const mainNavItems: NavItem[] = [
-  { href: "/dashboard", label: "Kontrolna tabla", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/clanovi", label: "Članovi", icon: Users },
-  { href: "/cene", label: "Cene", icon: Tags },
-  { href: "/pazar", label: "Pazar", icon: Banknote },
+  { href: "/cene", label: "Cene članarina", icon: Tags },
+  { href: "/pazar", label: "Dnevne uplate / Pazar", icon: Banknote },
 ];
 
 export const adminNavItems: NavItem[] = [
@@ -27,10 +27,10 @@ export const adminNavItems: NavItem[] = [
 ];
 
 const pageTitles: Record<string, string> = {
-  "/dashboard": "Kontrolna tabla",
+  "/dashboard": "Dashboard",
   "/clanovi": "Članovi",
-  "/cene": "Cene",
-  "/pazar": "Pazar",
+  "/cene": "Cene članarina",
+  "/pazar": "Dnevne uplate / Pazar",
   "/smene": "Smene",
   "/nalozi": "Nalozi",
 };

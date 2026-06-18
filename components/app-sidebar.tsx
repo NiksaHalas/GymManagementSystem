@@ -44,7 +44,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { SwitchWorkerDialog } from "@/components/switch-worker-dialog";
-import { endShiftAction, signOutAction } from "@/lib/shifts/actions";
+import {
+  endShiftAction,
+  hasOpenShiftAction,
+  signOutAction,
+} from "@/lib/shifts/actions";
 import {
   adminNavItems,
   isNavActive,
@@ -66,6 +70,7 @@ export function AppSidebar({
   const pathname = usePathname();
   const router = useRouter();
   const [endShiftOpen, setEndShiftOpen] = React.useState(false);
+  const [logoutOpen, setLogoutOpen] = React.useState(false);
   const [switchOpen, setSwitchOpen] = React.useState(false);
   const [pending, setPending] = React.useState(false);
 
@@ -89,6 +94,31 @@ export function AppSidebar({
       await signOutAction();
     } catch {
       toast.error("Greška pri odjavi.");
+      setPending(false);
+    }
+  }
+
+  async function handleSignOutClick() {
+    if (isCounter) {
+      const open = await hasOpenShiftAction();
+      if (open) {
+        setLogoutOpen(true);
+        return;
+      }
+    }
+    await handleSignOut();
+  }
+
+  async function handleEndShiftAndStay() {
+    setPending(true);
+    try {
+      await endShiftAction();
+      toast.success("Smena je završena.");
+      setLogoutOpen(false);
+      router.refresh();
+    } catch {
+      toast.error("Greška pri završetku smene.");
+    } finally {
       setPending(false);
     }
   }
@@ -229,7 +259,7 @@ export function AppSidebar({
                     </>
                   )}
                   <DropdownMenuItem
-                    onClick={handleSignOut}
+                    onClick={handleSignOutClick}
                     className="text-destructive focus:text-destructive"
                   >
                     <LogOut className="mr-2 h-4 w-4" />
@@ -256,6 +286,30 @@ export function AppSidebar({
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending}>Otkaži</AlertDialogCancel>
             <AlertDialogAction onClick={handleEndShift} disabled={pending}>
+              {pending ? "Završavam..." : "Završi smenu"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={logoutOpen} onOpenChange={setLogoutOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Otvorena smena</AlertDialogTitle>
+            <AlertDialogDescription>
+              Imate otvorenu smenu. Preporučujemo da je završite pre odjave.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
+            <AlertDialogCancel disabled={pending}>Otkaži</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleSignOut}
+              disabled={pending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {pending ? "Odjavljivanje..." : "Odjavi se ipak"}
+            </AlertDialogAction>
+            <AlertDialogAction onClick={handleEndShiftAndStay} disabled={pending}>
               {pending ? "Završavam..." : "Završi smenu"}
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { DateNav } from "@/app/(app)/dashboard/date-nav";
-import { ArrivalsTable } from "@/app/(app)/dashboard/arrivals-table";
-import { KeysPanel } from "@/app/(app)/dashboard/keys-panel";
+import { DateNav } from "@/app/(app)/(shell)/dashboard/date-nav";
+import { ArrivalsTable } from "@/app/(app)/(shell)/dashboard/arrivals-table";
+import { KeysPanel } from "@/app/(app)/(shell)/dashboard/keys-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatRsd } from "@/lib/members/format";
 import type {

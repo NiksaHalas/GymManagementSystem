@@ -14,7 +14,7 @@ import { formatFullName, formatMemberNo, formatRsd } from "@/lib/members/format"
 import { formatDate } from "@/lib/pazar/format";
 import type { PaymentRow, TakingsSummary } from "@/lib/pazar/types";
 import type { ShiftOption } from "@/lib/shifts/queries";
-import { PaymentRowActions } from "@/app/(app)/pazar/payment-row-actions";
+import { PaymentRowActions } from "@/app/(app)/(shell)/pazar/payment-row-actions";
 import { PaymentReconcileActions } from "@/components/payment-reconcile-actions";
 import { cn } from "@/lib/utils";
 
