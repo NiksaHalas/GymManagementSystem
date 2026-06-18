@@ -15,7 +15,7 @@ export type NavItem = {
 };
 
 export const mainNavItems: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Kontrolna tabla", icon: LayoutDashboard },
   { href: "/clanovi", label: "Članovi", icon: Users },
   { href: "/cene", label: "Cene članarina", icon: Tags },
   { href: "/pazar", label: "Dnevne uplate / Pazar", icon: Banknote },
@@ -27,7 +27,7 @@ export const adminNavItems: NavItem[] = [
 ];
 
 const pageTitles: Record<string, string> = {
-  "/dashboard": "Dashboard",
+  "/dashboard": "Kontrolna tabla",
   "/clanovi": "Članovi",
   "/cene": "Cene članarina",
   "/pazar": "Dnevne uplate / Pazar",

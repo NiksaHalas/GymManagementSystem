@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.9
+Version: 1.10
 Date: 2026-06-18
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -13,6 +13,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.7 records **Phase 1a Members fixes**: phone is now **unique across all members** (incl. archived) — the old "family sharing / soft duplicate warning" rule is dropped in favour of a hard, database-enforced block with a readable message (§3.3, §8); the member card and members list now show **"Istekla"** for expired memberships and add a **"Istorija članarina"** history section. See `DB.md` v1.10 / `Tech.md` v1.8.
 > v1.8 records **Phase 1a Members review closure**: restore (unarchive) is **Admin-only and DB-enforced** via a `BEFORE UPDATE` trigger (§3.3); **custom price** is intentionally shown only in payment history (per-payment `is_custom_price`/`custom_reason`), not as a separate card field (§3.3). See `DB.md` v1.11 / `Tech.md` v1.9.
 > v1.9 records **Phase 0 alignment live in production** (deployed 2026-06-18): access gate for workers off-counter (`/samo-salter`), logout open-shift prompt on counter devices, and **last-active-admin guard** — the system hard-blocks disabling or demoting the sole remaining active Admin (API 400 + disabled UI). Operational minimum of 2 Admins is partially enforced; provisioning a second Admin remains an operational responsibility. See `Tech.md` v1.10 / `DB.md` v1.12.
+> v1.10 records a **Phase 0 review label fix**: the Dashboard sidebar item / page title now reads **"Kontrolna tabla"** in the app (Serbian UI), matching `Tech.md` §12. No behavioural change. See `Tech.md` v1.11.
 
 ---
 
@@ -63,8 +64,8 @@ Notes:
 ## 3. Functional requirements
 
 ### 3.1 Login & accounts
-- Login page (username + password). After login → main Dashboard. Usernames are case-insensitive.
-- Sidebar navigation: Dashboard, Members ("Članovi"), Membership Prices ("Cene članarina"), Daily Payments / Takings ("Dnevne uplate / Pazar"), and Admin-only: Shifts ("Smene"), Accounts ("Nalozi").
+- Login page (username + password). After login → main Dashboard ("Kontrolna tabla"). Usernames are case-insensitive.
+- Sidebar navigation: Dashboard ("Kontrolna tabla"), Members ("Članovi"), Membership Prices ("Cene članarina"), Daily Payments / Takings ("Dnevne uplate / Pazar"), and Admin-only: Shifts ("Smene"), Accounts ("Nalozi").
 - Password policy: **minimum 8 characters**, no other rules.
 - **Disabled accounts cannot log in**; after several failed attempts in a row login is **temporarily locked** to deter guessing.
 - **Password reset**: self-service via **email**. Each worker account has a **recovery email** (set by an Admin). The worker requests a reset by username (or an Admin triggers it); a reset link valid for **1 hour** is emailed to that address.
