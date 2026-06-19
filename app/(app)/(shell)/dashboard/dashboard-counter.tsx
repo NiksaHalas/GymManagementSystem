@@ -14,6 +14,7 @@ import type {
   KeyHolder,
   SoonExpireMember,
   StaffOption,
+  TrainerCheckinCategory,
 } from "@/lib/dashboard/types";
 import type { ShiftOption } from "@/lib/shifts/queries";
 
@@ -23,6 +24,7 @@ interface DashboardCounterProps {
   keyHolders: KeyHolder[];
   soonExpire: SoonExpireMember[];
   staffOptions: StaffOption[];
+  trainerCategories: TrainerCheckinCategory[];
   canOperate: boolean;
   reconcileMode?: boolean;
   shifts?: ShiftOption[];
@@ -34,6 +36,7 @@ export function DashboardCounter({
   keyHolders,
   soonExpire,
   staffOptions,
+  trainerCategories,
   canOperate,
   reconcileMode = false,
   shifts = [],
@@ -100,6 +103,7 @@ export function DashboardCounter({
               if (!o) setCheckinMemberId(null);
             }}
             staffOptions={staffOptions}
+            trainerCategories={trainerCategories}
             occupiedOpenKeys={occupiedOpenKeys}
             onPayMembership={() => {
               if (checkinMemberId) openPayment(checkinMemberId);

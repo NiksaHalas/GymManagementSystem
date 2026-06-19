@@ -1,7 +1,7 @@
 # PRD — Gym Management System
 
-Version: 1.10
-Date: 2026-06-18
+Version: 1.11
+Date: 2026-06-19
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
@@ -14,6 +14,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.8 records **Phase 1a Members review closure**: restore (unarchive) is **Admin-only and DB-enforced** via a `BEFORE UPDATE` trigger (§3.3); **custom price** is intentionally shown only in payment history (per-payment `is_custom_price`/`custom_reason`), not as a separate card field (§3.3). See `DB.md` v1.11 / `Tech.md` v1.9.
 > v1.9 records **Phase 0 alignment live in production** (deployed 2026-06-18): access gate for workers off-counter (`/samo-salter`), logout open-shift prompt on counter devices, and **last-active-admin guard** — the system hard-blocks disabling or demoting the sole remaining active Admin (API 400 + disabled UI). Operational minimum of 2 Admins is partially enforced; provisioning a second Admin remains an operational responsibility. See `Tech.md` v1.10 / `DB.md` v1.12.
 > v1.10 records a **Phase 0 review label fix**: the Dashboard sidebar item / page title now reads **"Kontrolna tabla"** in the app (Serbian UI), matching `Tech.md` §12. No behavioural change. See `Tech.md` v1.11.
+> v1.11 records **Phase 1c Dashboard review follow-ups** (2026-06-19): a **trainer session for a member without an active trainer-based package** is now supported end-to-end (§3.5 "or no active package") — the worker picks the training category, the session is allowed, and it is recorded as a `rezervisano` debt at the **captured daily price** of that category; sessions **never transfer between categories** (a trainer session on, e.g., an active "Otvoreni" package does not consume an Otvoreni session — it is reserved). A member with an active **non-trainer** package gets a confirmation before the debt is recorded. Also: the "soon to expire" list no longer includes already-expired memberships (§3.13). **Accepted edge:** a session-based package whose `end_date` has passed but whose stored status is still `aktivna` is still treated as active (its session is deducted) — the "use remaining sessions after expiry" override (§3.4) remains a later phase. See `Tech.md` v1.14 / `DB.md` v1.15.
 
 ---
 

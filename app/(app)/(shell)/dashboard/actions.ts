@@ -15,6 +15,7 @@ import {
 import type { CheckinMemberContext } from "@/lib/dashboard/types";
 import {
   fetchCheckinMemberContext,
+  fetchTrainerCheckinCategories,
   countOpenKeysToday,
 } from "@/lib/dashboard/queries";
 import { searchMembers } from "@/app/(app)/(shell)/clanovi/actions";
@@ -78,8 +79,23 @@ export async function createMemberCheckin(
   const ctx = await fetchCheckinMemberContext(memberId);
   if (!ctx) return { ok: false, error: "Član nije pronađen." };
 
-  if (withTrainer && !ctx.isTrainerBased) {
-    return { ok: false, error: "Član nema trener-based članarinu." };
+  // Resolve the trainer-session category (PRD §3.5):
+  //  - active trainer-based membership (S1/S2) → category fixed to it (ignore client)
+  //  - otherwise (S0/S3) → worker-chosen category, validated against the allowed list
+  let effectiveCategoryId: number | null = null;
+  if (withTrainer) {
+    if (ctx.isTrainerBased) {
+      effectiveCategoryId = ctx.trainingCategoryId;
+    } else {
+      const allowed = await fetchTrainerCheckinCategories();
+      if (!allowed.some((c) => c.id === trainingCategoryId)) {
+        return { ok: false, error: "Neispravna kategorija treninga." };
+      }
+      effectiveCategoryId = trainingCategoryId;
+    }
+    if (effectiveCategoryId == null) {
+      return { ok: false, error: "Trener sesija zahteva kategoriju i trenera." };
+    }
   }
 
   if (keyNo === null) {
@@ -94,7 +110,7 @@ export async function createMemberCheckin(
     p_member_id: memberId,
     p_key_no: keyNo,
     p_with_trainer: withTrainer,
-    p_training_category_id: withTrainer ? trainingCategoryId : null,
+    p_training_category_id: withTrainer ? effectiveCategoryId : null,
     p_trainer_id: withTrainer ? trainerId : null,
     p_is_fitpass: false,
     p_is_group_fitpass: false,
@@ -104,9 +120,7 @@ export async function createMemberCheckin(
   if (error) return { ok: false, error: error.message };
 
   const reserved =
-    withTrainer &&
-    (ctx.sessionsLeft ?? 0) <= 0 &&
-    ctx.isTrainerBased;
+    withTrainer && (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
 
   revalidateDashboard();
   return { ok: true, id: data as string, reserved };

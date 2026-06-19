@@ -7,13 +7,15 @@ import {
   fetchKeyOccupancy,
   fetchSoonToExpire,
   fetchActiveStaff,
+  fetchTrainerCheckinCategories,
 } from "@/lib/dashboard/queries";
 import { fetchShiftsForBusinessDay } from "@/lib/shifts/queries";
+import { getPageTitle } from "@/lib/nav";
 import { DashboardCounter } from "@/app/(app)/(shell)/dashboard/dashboard-counter";
 import { DashboardOverview } from "@/app/(app)/(shell)/dashboard/dashboard-overview";
 
 export const metadata = {
-  title: "Dashboard — Teretana",
+  title: `${getPageTitle("/dashboard")} — Teretana`,
 };
 
 interface DashboardPageProps {
@@ -42,12 +44,13 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const canOperate = counter && isToday;
   const isAdmin = staff?.role === "admin";
 
-  const [checkins, keyHolders, soonExpire, staffOptions, shifts] =
+  const [checkins, keyHolders, soonExpire, staffOptions, trainerCategories, shifts] =
     await Promise.all([
       fetchDayCheckins(businessDate, { unassignedOnly }),
       fetchKeyOccupancy(businessDate),
       fetchSoonToExpire(),
       canOperate ? fetchActiveStaff() : Promise.resolve([]),
+      canOperate ? fetchTrainerCheckinCategories() : Promise.resolve([]),
       isAdmin && unassignedOnly
         ? fetchShiftsForBusinessDay(businessDate)
         : Promise.resolve([]),
@@ -82,6 +85,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         keyHolders={keyHolders}
         soonExpire={soonExpire}
         staffOptions={staffOptions}
+        trainerCategories={trainerCategories}
         canOperate={canOperate}
         reconcileMode={isAdmin && unassignedOnly}
         shifts={shifts}

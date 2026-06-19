@@ -35,9 +35,13 @@ import {
   createMemberCheckin,
   getMemberCheckinContext,
 } from "@/app/(app)/(shell)/dashboard/actions";
-import type { CheckinMemberContext, StaffOption } from "@/lib/dashboard/types";
+import type {
+  CheckinMemberContext,
+  StaffOption,
+  TrainerCheckinCategory,
+} from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
-import { formatFullName, formatMemberNo } from "@/lib/members/format";
+import { formatFullName, formatMemberNo, formatRsd } from "@/lib/members/format";
 import { cn } from "@/lib/utils";
 
 const RESERVED_WARN_THRESHOLD = 3;
@@ -47,6 +51,7 @@ interface CheckinDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   staffOptions: StaffOption[];
+  trainerCategories: TrainerCheckinCategory[];
   occupiedOpenKeys: number[];
   onPayMembership?: () => void;
   paymentRefreshKey?: number;
@@ -57,6 +62,7 @@ export function CheckinDialog({
   open,
   onOpenChange,
   staffOptions,
+  trainerCategories,
   occupiedOpenKeys,
   onPayMembership,
   paymentRefreshKey = 0,
@@ -70,6 +76,7 @@ export function CheckinDialog({
             memberId={memberId}
             onOpenChange={onOpenChange}
             staffOptions={staffOptions}
+            trainerCategories={trainerCategories}
             occupiedOpenKeys={occupiedOpenKeys}
             onPayMembership={onPayMembership}
             paymentRefreshKey={paymentRefreshKey}
@@ -88,6 +95,7 @@ interface CheckinDialogFormProps {
   memberId: string;
   onOpenChange: (open: boolean) => void;
   staffOptions: StaffOption[];
+  trainerCategories: TrainerCheckinCategory[];
   occupiedOpenKeys: number[];
   onPayMembership?: () => void;
   paymentRefreshKey?: number;
@@ -97,6 +105,7 @@ function CheckinDialogForm({
   memberId,
   onOpenChange,
   staffOptions,
+  trainerCategories,
   occupiedOpenKeys,
   onPayMembership,
   paymentRefreshKey = 0,
@@ -108,14 +117,23 @@ function CheckinDialogForm({
   const [noKey, setNoKey] = React.useState(false);
   const [withTrainer, setWithTrainer] = React.useState(false);
   const [trainerId, setTrainerId] = React.useState("");
+  const [categoryId, setCategoryId] = React.useState("");
   const [pending, setPending] = React.useState(false);
   const [commentAckOpen, setCommentAckOpen] = React.useState(false);
+  const [s3ConfirmOpen, setS3ConfirmOpen] = React.useState(false);
+  const commentShownRef = React.useRef(false);
 
   React.useEffect(() => {
     let cancelled = false;
     getMemberCheckinContext(memberId)
       .then((data) => {
-        if (!cancelled) setCtx(data);
+        if (cancelled) return;
+        setCtx(data);
+        // Comment popup fires on open (once per member), independent of submit.
+        if (!commentShownRef.current && data?.comment?.trim()) {
+          commentShownRef.current = true;
+          setCommentAckOpen(true);
+        }
       })
       .catch(() => {
         if (!cancelled) toast.error("Greška pri učitavanju člana.");
@@ -129,11 +147,43 @@ function CheckinDialogForm({
   }, [memberId, paymentRefreshKey]);
 
   const allKeysTaken = occupiedOpenKeys.length >= KEY_COUNT;
+  // No active trainer-based membership → worker picks the trainer category (S0/S3).
+  const needsManualCategory = ctx ? !ctx.isTrainerBased : false;
+  const lastCategoryLabel =
+    ctx?.lastTrainerCategoryId != null
+      ? trainerCategories.find((c) => c.id === ctx.lastTrainerCategoryId)?.label ??
+        null
+      : null;
+
+  function validate(): boolean {
+    if (!ctx) return false;
+    if (!noKey && keyNo == null) {
+      toast.error("Izaberite ključ ili označite „Bez ključa“.");
+      return false;
+    }
+    if (noKey && !allKeysTaken) {
+      toast.error("Svi ključevi nisu zauzeti — izaberite ključ.");
+      return false;
+    }
+    if (withTrainer) {
+      if (!trainerId) {
+        toast.error("Izaberite trenera.");
+        return false;
+      }
+      if (needsManualCategory && !categoryId) {
+        toast.error("Izaberite kategoriju treninga.");
+        return false;
+      }
+    }
+    return true;
+  }
 
   function requestSubmit() {
-    if (!ctx) return;
-    if (ctx.comment?.trim()) {
-      setCommentAckOpen(true);
+    if (!validate() || !ctx) return;
+    // S3: member has an active (non-trainer) membership but the trainer session
+    // is not covered by it → confirm before recording a debt.
+    if (withTrainer && needsManualCategory && ctx.membershipId != null) {
+      setS3ConfirmOpen(true);
       return;
     }
     void doSubmit();
@@ -142,30 +192,18 @@ function CheckinDialogForm({
   async function doSubmit() {
     if (!ctx) return;
 
-    if (!noKey && keyNo == null) {
-      toast.error("Izaberite ključ ili označite „Bez ključa“.");
-      return;
-    }
-
-    if (withTrainer && !trainerId) {
-      toast.error("Izaberite trenera.");
-      return;
-    }
-
-    if (noKey && !allKeysTaken) {
-      toast.error("Svi ključevi nisu zauzeti — izaberite ključ.");
-      return;
-    }
-
     setPending(true);
     try {
       const res = await createMemberCheckin({
         memberId,
         keyNo: noKey ? null : keyNo,
-        withTrainer: ctx.isTrainerBased && withTrainer,
-        trainingCategoryId:
-          ctx.isTrainerBased && withTrainer ? ctx.trainingCategoryId : null,
-        trainerId: ctx.isTrainerBased && withTrainer ? trainerId : null,
+        withTrainer,
+        trainingCategoryId: withTrainer
+          ? needsManualCategory
+            ? Number(categoryId)
+            : ctx.trainingCategoryId
+          : null,
+        trainerId: withTrainer ? trainerId : null,
       });
 
       if (!res.ok) {
@@ -185,7 +223,7 @@ function CheckinDialogForm({
       router.refresh();
     } finally {
       setPending(false);
-      setCommentAckOpen(false);
+      setS3ConfirmOpen(false);
     }
   }
 
@@ -270,48 +308,71 @@ function CheckinDialogForm({
             </div>
           </div>
 
-          {ctx.isTrainerBased && (
-            <div className="space-y-2 rounded-md border p-3">
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="with-trainer"
-                  checked={withTrainer}
-                  onCheckedChange={(v) => setWithTrainer(v === true)}
-                />
-                <Label htmlFor="with-trainer" className="text-sm font-normal">
-                  Sa trenerom ({ctx.trainingCategoryLabel})
-                </Label>
-              </div>
-              {withTrainer && (
-                <>
-                  <Select value={trainerId} onValueChange={setTrainerId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Izaberite trenera" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {staffOptions.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.username}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {(ctx.sessionsLeft ?? 0) <= 0 && (
-                    <p className="text-amber-600 dark:text-amber-400 text-xs">
-                      Nema preostalih sesija — biće rezervisano kao dužan termin.
-                      {ctx.unsettledReservedCount >= RESERVED_WARN_THRESHOLD &&
-                        " Upozorenje: već ima 3+ neizmirenih termina."}
-                    </p>
-                  )}
-                </>
-              )}
-              {!withTrainer && (
-                <p className="text-muted-foreground text-xs">
-                  Član trenira samostalno — sesija se ne oduzima.
-                </p>
-              )}
+          <div className="space-y-2 rounded-md border p-3">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="with-trainer"
+                checked={withTrainer}
+                onCheckedChange={(v) => setWithTrainer(v === true)}
+              />
+              <Label htmlFor="with-trainer" className="text-sm font-normal">
+                {ctx.isTrainerBased
+                  ? `Sa trenerom (${ctx.trainingCategoryLabel})`
+                  : "Sa trenerom"}
+              </Label>
             </div>
-          )}
+            {withTrainer && (
+              <>
+                {needsManualCategory && (
+                  <div className="space-y-1">
+                    <Select value={categoryId} onValueChange={setCategoryId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Izaberite kategoriju treninga" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {trainerCategories.map((c) => (
+                          <SelectItem key={c.id} value={String(c.id)}>
+                            {c.label} · {formatRsd(c.dailyPriceRsd)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {lastCategoryLabel && (
+                      <p className="text-muted-foreground text-xs">
+                        Poslednji put: {lastCategoryLabel}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <Select value={trainerId} onValueChange={setTrainerId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Izaberite trenera" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {staffOptions.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.username}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {(needsManualCategory || (ctx.sessionsLeft ?? 0) <= 0) && (
+                  <p className="text-amber-600 dark:text-amber-400 text-xs">
+                    {needsManualCategory
+                      ? "Nema aktivne članarine za ovu kategoriju — biće rezervisano kao dužan termin."
+                      : "Nema preostalih sesija — biće rezervisano kao dužan termin."}
+                    {ctx.unsettledReservedCount >= RESERVED_WARN_THRESHOLD &&
+                      " Upozorenje: već ima 3+ neizmirenih termina."}
+                  </p>
+                )}
+              </>
+            )}
+            {!withTrainer && (
+              <p className="text-muted-foreground text-xs">
+                Član trenira samostalno — sesija se ne oduzima.
+              </p>
+            )}
+          </div>
         </div>
       )}
 
@@ -349,9 +410,28 @@ function CheckinDialogForm({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setCommentAckOpen(false)}>
+              Razumem
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={s3ConfirmOpen} onOpenChange={setS3ConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Trener sesija bez pokrića</AlertDialogTitle>
+            <AlertDialogDescription>
+              Član ima aktivnu članarinu
+              {ctx?.membershipLabel ? ` (${ctx.membershipLabel})` : ""} koja ne
+              pokriva trener sesiju. Sesija će biti evidentirana kao dužan termin.
+              Nastaviti?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
             <AlertDialogCancel>Otkaži</AlertDialogCancel>
             <AlertDialogAction onClick={() => void doSubmit()}>
-              Razumem, nastavi
+              Nastavi
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -68,6 +68,14 @@ export interface StaffOption {
   username: string;
 }
 
+/** Trainer-based category selectable at check-in for members without a covering
+ * package (S0/S3); only categories that have an active daily (sessions=1) price. */
+export interface TrainerCheckinCategory {
+  id: number;
+  label: string;
+  dailyPriceRsd: number;
+}
+
 export interface CheckinMemberContext {
   memberId: string;
   memberNo: number | null;
@@ -86,4 +94,7 @@ export interface CheckinMemberContext {
   membershipStatus: MemberStatusKind;
   membershipStatusLabel: string;
   unsettledReservedCount: number;
+  /** Category of the member's most recent non-voided trainer check-in (passive
+   * "last time" hint for the manual category selector); null if never. */
+  lastTrainerCategoryId: number | null;
 }

@@ -12,6 +12,7 @@ import type {
   KeyHolder,
   SoonExpireMember,
   StaffOption,
+  TrainerCheckinCategory,
 } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
 import { getShiftAttributionLaunchAt } from "@/lib/shifts/config";
@@ -332,6 +333,7 @@ export async function fetchSoonToExpire(): Promise<SoonExpireMember[]> {
     )
     .eq("status", "aktivna")
     .not("end_date", "is", null)
+    .gte("end_date", today)
     .lte("end_date", limitIso)
     .order("end_date");
 
@@ -450,6 +452,17 @@ export async function fetchCheckinMemberContext(
     .eq("member_id", memberId)
     .eq("settled", false);
 
+  const { data: lastTrainer } = await supabase
+    .from("checkin")
+    .select("training_category_id")
+    .eq("member_id", memberId)
+    .eq("with_trainer", true)
+    .eq("voided", false)
+    .not("training_category_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   const mt = unwrapJoin(membership?.membership_type) as {
     label: string;
     is_time_based: boolean;
@@ -490,7 +503,60 @@ export async function fetchCheckinMemberContext(
     membershipStatus: status.kind,
     membershipStatusLabel: status.label,
     unsettledReservedCount: unsettledCount ?? 0,
+    lastTrainerCategoryId: lastTrainer?.training_category_id ?? null,
   };
+}
+
+/**
+ * Trainer-based categories selectable at check-in for members without a covering
+ * package (S0/S3). Only categories that have an active daily (sessions=1, standard)
+ * price are returned so `capture_daily_price` never fails server-side (PRD §3.5).
+ */
+export async function fetchTrainerCheckinCategories(): Promise<
+  TrainerCheckinCategory[]
+> {
+  const supabase = await getClient();
+
+  const [catsRes, typesRes, pricesRes] = await Promise.all([
+    supabase
+      .from("training_category")
+      .select("id, label, sort_order")
+      .eq("active", true)
+      .eq("is_trainer_based", true)
+      .order("sort_order", { ascending: true }),
+    supabase
+      .from("membership_type")
+      .select("id, training_category_id")
+      .eq("active", true)
+      .eq("sessions", 1),
+    supabase
+      .from("price")
+      .select("membership_type_id, amount_rsd")
+      .eq("active", true)
+      .eq("is_discount_price", false),
+  ]);
+
+  if (catsRes.error) throw new Error(catsRes.error.message);
+  if (typesRes.error) throw new Error(typesRes.error.message);
+  if (pricesRes.error) throw new Error(pricesRes.error.message);
+
+  const priceByType = new Map<number, number>();
+  for (const p of pricesRes.data ?? []) {
+    priceByType.set(p.membership_type_id, p.amount_rsd);
+  }
+
+  const dailyByCategory = new Map<number, number>();
+  for (const t of typesRes.data ?? []) {
+    const amount = priceByType.get(t.id);
+    if (amount != null) dailyByCategory.set(t.training_category_id, amount);
+  }
+
+  return (catsRes.data ?? []).flatMap((c) => {
+    const daily = dailyByCategory.get(c.id);
+    return daily != null
+      ? [{ id: c.id, label: c.label, dailyPriceRsd: daily }]
+      : [];
+  });
 }
 
 export async function countOpenKeysToday(): Promise<number> {

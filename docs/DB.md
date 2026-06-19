@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.14
+Version: 1.15
 Date: 2026-06-19
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -19,6 +19,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.12 — **no schema change.** Confirms **Phase 0 alignment production deploy** (2026-06-18): migration `20260618140000` (`has_open_shift`) applied on remote; `supabase db push` was a no-op (ledger already 1:1, 31/31). RPC documented in §12.3a. See `Tech.md` v1.10 / §9.2.
 > v1.13 — **Phase 1a Members review follow-ups** (2026-06-18). Migration `20260618184915` (`member_archive_no_debt_guard`): trigger **`member_archive_no_debt_guard`** + **`enforce_member_archive_no_debt()`** — archiving (`archived` false→true) is blocked while the member has any unsettled `reserved_session` (`settled = false`), raising SQLSTATE `23514` with a readable Serbian message (PRD §3.5; §3.3, §5.1). It is the authoritative DB backstop to the existing count-then-act pre-check in `clanovi/actions.ts` (closes a TOCTOU window). **Ledger note:** applied via MCP `apply_migration` (CLI `db push` was unavailable — project not linked locally), so the remote ledger stamped its execution timestamp `20260618184915`; the repo migration file was **renamed to that version** to keep the ledger 1:1 (same reconcile convention as v1.8). See `Tech.md` v1.12.
 > v1.14 — **no schema change.** Records **Phase 1b Cene review follow-ups** (2026-06-19): code-only cleanup on the prices feature — shared catalog sort helper, cached RSC client on `/cene` + `/nalozi`, removed unused catalog server actions/schemas, and readable Serbian errors for new-category slug collision / empty name. No tables, RPCs, or RLS touched. See `Tech.md` v1.13.
+> v1.15 — **Phase 1c Dashboard review follow-ups** (2026-06-19). Migration `20260619120000_checkin_trainer_no_package` (`create or replace` on two RPCs; **no table/RLS change**, `create_checkin` signature unchanged so no type regen): (1) `create_checkin` now models the trainer session **by training category** — it deducts only from an active trainer-based membership of the **same** category with `sessions_left > 0`, otherwise inserts a `reserved_session` (so members with no package or a non-trainer/expired package — PRD §3.5 "or no active package" — are handled and sessions never spill across categories); `checkin.membership_id` is the same-category active membership or `null` (S0/S3). Missing daily price raises custom SQLSTATE **`GYM01`** (readable Serbian); a category that mismatches an active trainer-based membership raises **`GYM02`** (defense-in-depth, UI never sends it). (2) `void_checkin`'s `first_visit` revert is now **member-scoped** (finds the member's first-visit membership activated on that `business_date`) instead of keyed on `checkin.membership_id`, so a reserved trainer check-in (`membership_id` null) that triggered the activation is still reverted on void. Applied via `supabase db push`. See `Tech.md` v1.14 / PRD §3.5.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -749,20 +750,21 @@ Atomically inserts a `checkin` row and applies side effects:
 | `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag inserts immediate `payment` `kind='fitpass_surcharge'` (+300 RSD) |
 | `p_business_date` | Defaults to `business_today()` |
 
-**Side effects** (when applicable):
-- Trainer session + sessions left > 0 → decrement `membership.sessions_left`, insert `session_log`, set `decremented_session = true`.
-- Trainer session + 0 sessions → insert `reserved_session` with `amount_rsd = capture_daily_price(...)`.
-- `start_mode = 'first_visit'` + first check-in → set `start_date` / `end_date` on membership.
+**Side effects** (when applicable) — trainer session is modelled **by training category** (v1.15):
+- Active **trainer-based** membership of the **same** `p_training_category_id` with `sessions_left > 0` → decrement `membership.sessions_left`, insert `session_log`, set `decremented_session = true`; `checkin.membership_id` = that membership.
+- Active trainer-based membership of the same category with 0 sessions → insert `reserved_session` with `amount_rsd = capture_daily_price(...)`; `checkin.membership_id` = that membership.
+- **No active trainer-based membership of that category** (no package, or a non-trainer/expired package — PRD §3.5 "or no active package") → insert `reserved_session` with the chosen category; `checkin.membership_id = null`. Sessions never transfer between categories.
+- `start_mode = 'first_visit'` + first check-in → set `start_date` / `end_date` on the member's active membership (independent of whether the arrival is a trainer session).
 - Group Fitpass (`p_is_fitpass and p_is_group_fitpass`) → insert `payment` (+300 RSD, `member_id` null).
-- Validates: active member, valid key, active trainer, category is trainer-based.
+- Validates: active member, valid key, active trainer, category is trainer-based. Missing daily price → SQLSTATE **`GYM01`**; category ≠ an active trainer-based membership's category → SQLSTATE **`GYM02`** (defense-in-depth; UI fixes the category in that case).
 
 ### 10.3 `void_checkin(p_checkin_id uuid) → void`
 Soft-voids a check-in (`voided = true`, audit columns). **Workers**: same business day only; **admins**: any day (via `is_admin()`).
 
 **Reverts**:
-- Restores +1 session if `decremented_session`.
+- Restores +1 session if `decremented_session` (and `checkin.membership_id` is set).
 - Deletes linked `session_log` and unsettled `reserved_session`.
-- May clear `first_visit` activation if this was the member's only non-voided check-in.
+- May clear `first_visit` activation if this was the member's only non-voided check-in — **member-scoped** (v1.15): finds the member's `first_visit` membership whose `start_date` equals this check-in's `business_date`, not keyed on `checkin.membership_id`, so a reserved trainer check-in (`membership_id` null) that triggered the activation is also reverted.
 
 Voided rows are excluded from day lists and from `checkin_open_key_idx` (key occupancy).
 
