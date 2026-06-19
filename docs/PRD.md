@@ -15,6 +15,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.9 records **Phase 0 alignment live in production** (deployed 2026-06-18): access gate for workers off-counter (`/samo-salter`), logout open-shift prompt on counter devices, and **last-active-admin guard** — the system hard-blocks disabling or demoting the sole remaining active Admin (API 400 + disabled UI). Operational minimum of 2 Admins is partially enforced; provisioning a second Admin remains an operational responsibility. See `Tech.md` v1.10 / `DB.md` v1.12.
 > v1.10 records a **Phase 0 review label fix**: the Dashboard sidebar item / page title now reads **"Kontrolna tabla"** in the app (Serbian UI), matching `Tech.md` §12. No behavioural change. See `Tech.md` v1.11.
 > v1.11 records **Phase 1c Dashboard review follow-ups** (2026-06-19): a **trainer session for a member without an active trainer-based package** is now supported end-to-end (§3.5 "or no active package") — the worker picks the training category, the session is allowed, and it is recorded as a `rezervisano` debt at the **captured daily price** of that category; sessions **never transfer between categories** (a trainer session on, e.g., an active "Otvoreni" package does not consume an Otvoreni session — it is reserved). A member with an active **non-trainer** package gets a confirmation before the debt is recorded. Also: the "soon to expire" list no longer includes already-expired memberships (§3.13). **Accepted edge:** a session-based package whose `end_date` has passed but whose stored status is still `aktivna` is still treated as active (its session is deducted) — the "use remaining sessions after expiry" override (§3.4) remains a later phase. See `Tech.md` v1.14 / `DB.md` v1.15.
+> v1.12 records **Payment ↔ Check-in link (Etapa 1)** (2026-06-19): a money-correctness fix for group Fitpass. **Cancelling a group Fitpass arrival now also removes its +300 RSD surcharge from the day's takings** (§3.8, §3.11) — previously the surcharge stayed in the total, inflating the "pazar". The +300 also shows as a badge on that arrival's dashboard row. A genuine membership payment linked to an arrival is never affected by cancelling the arrival. UI wiring so a regular member payment can be tied to a specific arrival is staged for **Etapa 2**. See `Tech.md` v1.15 / `DB.md` v1.17.
 
 ---
 
@@ -159,7 +160,7 @@ Rules:
 ### 3.8 Fitpass
 - **Fast anonymous "Fitpass" entry** on the dashboard with a **mandatory key number** (no member card created).
 - A normal (non-group) Fitpass visit is recorded as a **0 RSD check-in** (counted, no money).
-- For a **group session via Fitpass** there is a **+300 RSD surcharge**, recorded as a payment that day and **included in the daily total**.
+- For a **group session via Fitpass** there is a **+300 RSD surcharge**, recorded as a payment that day and **included in the daily total**. The dashboard shows this charge **on the group Fitpass arrival's row**, and **voiding that arrival removes the +300 from the daily total** (a cancelled group Fitpass visit no longer inflates the takings).
 
 ### 3.9 Membership prices (page)
 - Overview page: **tabbed by training category** (Otvoreni tip, Kardio, Individualni, Duo, Vođeni, plus any Admin-added categories); each tab lists all packages with standard (and, for Open type, discount) prices.
@@ -179,6 +180,7 @@ Rules:
 - A **User** can edit/void **same-day** entries; an **Admin** can do so for **any day**.
 - Voids are **kept in history** (not hard-deleted) for accountability.
 - Voiding a payment that created or extended a membership **automatically reverts** that membership change (sessions/dates).
+- Voiding a **group Fitpass arrival** automatically voids its **+300 surcharge** too, so the day's takings stay correct; a real membership payment tied to an arrival is **never** voided by cancelling the arrival.
 
 ### 3.12 Shifts & audit
 - Shifts are derived **automatically from counter logins** (who was logged in and for which period). A shift **opens automatically** when a worker logs in at the counter.
@@ -330,7 +332,7 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |
 | **Pazar ("Dnevne uplate")** | `/pazar`: daily payments table + net total + date nav; storno (mandatory reason) + edit amount/reason; shared `PaymentDialog` from dashboard search, arrivals row, check-in dialog, member card; membership payment (category → package → auto price, custom discount confirm, `start_mode`); debt settlement (per owed session); queued **`zakazana`** renewal when member already active; Admin month/year breakdown + CSV export |
 | **Payments on dashboard** | Standalone "Naplati" from search; "Naplati" on arrival row; "Naplati članarinu" in check-in dialog (pay then continue check-in); counter + today guard on `recordPayment` |
-| **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total) |
+| **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total); **voiding the arrival reverses the +300** and the charge shows as a per-arrival badge (Etapa 1, v1.12) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:

@@ -32,6 +32,7 @@ type RawCheckin = {
   created_at: string;
   business_date: string;
   shift_id: string | null;
+  staff_id: string | null;
   waived_at: string | null;
   key_no: number | null;
   key_returned: boolean;
@@ -77,6 +78,7 @@ export async function fetchDayCheckins(
       created_at,
       business_date,
       shift_id,
+      staff_id,
       waived_at,
       key_no,
       key_returned,
@@ -184,6 +186,44 @@ export async function fetchDayCheckins(
     }
   }
 
+  // Group-Fitpass surcharge (+300, member_id = null) badges per check-in. Forward
+  // path: payment.checkin_id (set by create_checkin). Legacy fallback for any rows
+  // the backfill missed: exact key (staff_id + created_at), same key void_checkin
+  // uses. After the migration backfill the forward lookup covers all rows; the
+  // fallback is belt-and-suspenders.
+  const surchargeByCheckin = new Map<string, number>();
+  if (checkinIds.length > 0) {
+    const { data: surcharges } = await supabase
+      .from("payment")
+      .select("checkin_id, staff_id, created_at, amount_rsd")
+      .eq("kind", "fitpass_surcharge")
+      .eq("voided", false)
+      .eq("business_date", businessDate);
+
+    const legacy: { staff_id: string | null; created_at: string; amount_rsd: number }[] = [];
+    for (const s of surcharges ?? []) {
+      if (s.checkin_id) {
+        surchargeByCheckin.set(s.checkin_id, s.amount_rsd);
+      } else {
+        legacy.push({
+          staff_id: s.staff_id,
+          created_at: s.created_at,
+          amount_rsd: s.amount_rsd,
+        });
+      }
+    }
+
+    if (legacy.length > 0) {
+      for (const c of rawCheckins) {
+        if (!c.is_group_fitpass || surchargeByCheckin.has(c.id)) continue;
+        const match = legacy.find(
+          (l) => l.staff_id === c.staff_id && l.created_at === c.created_at,
+        );
+        if (match) surchargeByCheckin.set(c.id, match.amount_rsd);
+      }
+    }
+  }
+
   return rawCheckins.map((c) => {
     const summary: MembershipSummary | null = c.membership
       ? {
@@ -196,6 +236,7 @@ export async function fetchDayCheckins(
 
     const status = getMemberStatus(summary, today);
     const payment = c.member_id ? paymentsByMember.get(c.member_id) : undefined;
+    const surchargeRsd = c.is_group_fitpass ? surchargeByCheckin.get(c.id) : undefined;
 
     return {
       id: c.id,
@@ -225,7 +266,13 @@ export async function fetchDayCheckins(
             membershipLabel: payment.membership_type?.label ?? null,
             kind: payment.kind,
           }
-        : null,
+        : surchargeRsd != null
+          ? {
+              amountRsd: surchargeRsd,
+              membershipLabel: null,
+              kind: "fitpass_surcharge",
+            }
+          : null,
       shiftId: c.shift_id,
       pendingAttribution:
         c.shift_id == null &&
