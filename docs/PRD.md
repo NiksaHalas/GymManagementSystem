@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.11
+Version: 1.13
 Date: 2026-06-19
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -15,7 +15,8 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.9 records **Phase 0 alignment live in production** (deployed 2026-06-18): access gate for workers off-counter (`/samo-salter`), logout open-shift prompt on counter devices, and **last-active-admin guard** — the system hard-blocks disabling or demoting the sole remaining active Admin (API 400 + disabled UI). Operational minimum of 2 Admins is partially enforced; provisioning a second Admin remains an operational responsibility. See `Tech.md` v1.10 / `DB.md` v1.12.
 > v1.10 records a **Phase 0 review label fix**: the Dashboard sidebar item / page title now reads **"Kontrolna tabla"** in the app (Serbian UI), matching `Tech.md` §12. No behavioural change. See `Tech.md` v1.11.
 > v1.11 records **Phase 1c Dashboard review follow-ups** (2026-06-19): a **trainer session for a member without an active trainer-based package** is now supported end-to-end (§3.5 "or no active package") — the worker picks the training category, the session is allowed, and it is recorded as a `rezervisano` debt at the **captured daily price** of that category; sessions **never transfer between categories** (a trainer session on, e.g., an active "Otvoreni" package does not consume an Otvoreni session — it is reserved). A member with an active **non-trainer** package gets a confirmation before the debt is recorded. Also: the "soon to expire" list no longer includes already-expired memberships (§3.13). **Accepted edge:** a session-based package whose `end_date` has passed but whose stored status is still `aktivna` is still treated as active (its session is deducted) — the "use remaining sessions after expiry" override (§3.4) remains a later phase. See `Tech.md` v1.14 / `DB.md` v1.15.
-> v1.12 records **Payment ↔ Check-in link (Etapa 1)** (2026-06-19): a money-correctness fix for group Fitpass. **Cancelling a group Fitpass arrival now also removes its +300 RSD surcharge from the day's takings** (§3.8, §3.11) — previously the surcharge stayed in the total, inflating the "pazar". The +300 also shows as a badge on that arrival's dashboard row. A genuine membership payment linked to an arrival is never affected by cancelling the arrival. UI wiring so a regular member payment can be tied to a specific arrival is staged for **Etapa 2**. See `Tech.md` v1.15 / `DB.md` v1.17.
+> v1.12 records **Payment ↔ Check-in link (Etapa 1)** (2026-06-19): a money-correctness fix for group Fitpass. **Cancelling a group Fitpass arrival now also removes its +300 RSD surcharge from the day's takings** (§3.8, §3.11) — previously the surcharge stayed in the total, inflating the "pazar". The +300 also shows as a badge on that arrival's dashboard row. A genuine membership payment linked to an arrival is never affected by cancelling the arrival. See `Tech.md` v1.15 / `DB.md` v1.17.
+> v1.13 aligns **§9 Implementation status** with the codebase (2026-06-19): Phase 1c dashboard scope; **payment `checkin_id` Etapa 2 partial** — "Naplati" on an existing arrival row links the membership payment; search / member card / "Naplati članarinu" before check-in intentionally omit the link. Adds deferred items for session override after expiry (§3.4) and end-of-day unreturned-keys visibility (§3.7). See `Tech.md` v1.16 / `DB.md` v1.17.
 
 ---
 
@@ -319,7 +320,7 @@ Rules:
 
 ---
 
-## 9. Implementation status (as of 2026-06-17)
+## 9. Implementation status (as of 2026-06-19)
 
 This section tracks delivery against the requirements above. Technical detail lives in `Tech.md` / `DB.md`.
 
@@ -329,19 +330,22 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Auth & shell** | Login, password reset (recovery email → link → set new password), accounts (incl. last-active-admin guard), counter-device cookie + `/samo-salter` access gate, shift lifecycle (auto-open, handover, manual end, logout open-shift prompt, auto-close safety net), sidebar nav |
 | **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
 | **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
-| **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner |
+| **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (key, trainer session, comment popup on open); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days, excludes already-expired); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner. **Phase 1c (2026-06-19):** trainer session without an active trainer-based package (worker picks category; `rezervisano` debt at captured daily price; sessions never transfer across categories); S3 confirm when member has active non-trainer package |
 | **Pazar ("Dnevne uplate")** | `/pazar`: daily payments table + net total + date nav; storno (mandatory reason) + edit amount/reason; shared `PaymentDialog` from dashboard search, arrivals row, check-in dialog, member card; membership payment (category → package → auto price, custom discount confirm, `start_mode`); debt settlement (per owed session); queued **`zakazana`** renewal when member already active; Admin month/year breakdown + CSV export |
-| **Payments on dashboard** | Standalone "Naplati" from search; "Naplati" on arrival row; "Naplati članarinu" in check-in dialog (pay then continue check-in); counter + today guard on `recordPayment` |
+| **Payments on dashboard** | Standalone "Naplati" from search (no arrival link); **"Naplati" on arrival row** (membership payment linked via `payment.checkin_id` — Etapa 2 partial); "Naplati članarinu" in check-in dialog before check-in (no arrival link yet); counter + today guard on `recordPayment` |
 | **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total); **voiding the arrival reverses the +300** and the charge shows as a per-arrival badge (Etapa 1, v1.12) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
 - **Auto session deduction** for non-trainer Open packages (8/1, 12/1) on solo arrival — trainer-tick path only in v1.
-- **Key-number search UI** — enter key → show last holder (occupancy panel shows current holders only).
-- **Offline / PWA** — check-in and payment queue when internet is down.
+- **Key-number search UI** — enter key → show last holder (occupancy panel shows today's holders only; click shows holder).
+- **Offline / PWA** — check-in and payment queue when internet is down (Phase 3).
+- **Session override after expiry** — worker confirmation to use remaining sessions on an expired package (§3.4); accepted edge today: `aktivna` + past `end_date` still deducts until `promote_memberships()` flips status.
+- **End-of-day unreturned keys** — sign/report for keys not released via "otišao" (§3.7); open keys are visible in the keys panel for the selected day only.
 
-### 9.3 Not started (post-MVP)
-- **Pause / resume** membership.
-- **USB backup** companion script (scheduled 3×/day).
-- **Smene** — Admin shift history UI (`/smene` is a stub; shift lifecycle runs in the background).
+### 9.3 Not started (post-MVP / Phase 2–3)
+- **Pause / resume** membership (schema supports `pauzirana`; no RPC or UI yet).
+- **USB backup** companion script (scheduled 3×/day) — Phase 3.
+- **Smene** — Admin shift **history** UI (`/smene` is a stub; shift open/handover/end, auto-close, and admin reconcile run in the background and sidebar).
+- **Payment ↔ check-in Etapa 2 remainder** — link membership payment when paying from check-in dialog **after** `create_checkin` returns an arrival id (search / member card remain standalone by design).
