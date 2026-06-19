@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.16
+Version: 1.17
 Date: 2026-06-19
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -22,6 +22,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.14 records **Phase 1c Dashboard review follow-ups** (2026-06-19; migration `20260619120000_checkin_trainer_no_package`, `create or replace` on `create_checkin` / `void_checkin` — **no table/RLS change**, RPC signature unchanged so **no type regen**): (1) **trainer session without an active trainer-based package** (PRD §3.5) — `create_checkin` is unified **by training category** (deduct only from the same-category active package with sessions; otherwise `reserved_session`; `checkin.membership_id` = same-category active membership or `null`; `GYM01`/`GYM02` SQLSTATEs — `DB.md` §10.2); `void_checkin` first-visit revert is now member-scoped (§10.3); (2) **dashboard UI** (`checkin-dialog.tsx`): trainer tick is offered to **all** members; when there is no active trainer-based membership (S0/S3) the worker picks the category from a new server-filtered list (`fetchTrainerCheckinCategories` — only `is_trainer_based` categories with an active `sessions=1` price), **no preselect**, with a passive „Poslednji put" hint (`lastTrainerCategoryId`); an active **non-trainer** membership (S3) prompts a confirm before the debt; the comment popup now fires on **dialog open**; category resolution is server-authoritative in `dashboard/actions.ts` (S1/S2 fixed to the membership, S0/S3 validated against the list); (3) **P4** `fetchSoonToExpire` adds `.gte("end_date", today)` so already-expired memberships drop out of „uskoro ističe"; (4) **P6** the dashboard `metadata.title` is centralised from `lib/nav.ts` (`getPageTitle`). The payment-badge dedup (P5) and the paused-membership session rule (Phase 2) are intentionally **not** in this round. **Follow-up regression fix** (migration `20260619130000`): the v1.14 `create_checkin` rewrite dropped the `shift_id` assignment from `20260617100700` (§5 / `DB.md` §12.4); restored so check-ins and the group-Fitpass payment are attributed to the caller's open shift again (`DB.md` v1.16). See `DB.md` v1.15–v1.16 / PRD v1.11.
 > v1.15 records **Payment ↔ Check-in veza — Etapa 1** (2026-06-19; migration `20260619140000_payment_checkin_link`): adds **`payment.checkin_id`** so a charge can be tied to the arrival that generated it (§2.3/§2.4). (1) **M1 fix** — `void_checkin` now reverses the group-Fitpass **+300 `fitpass_surcharge`** charge it could not previously reach, so voiding a group Fitpass arrival no longer leaves +300 in the day's takings (two-stage match: `payment.checkin_id` FK → exact-key fallback `business_date`+`staff_id`+`created_at` for legacy rows; only `kind='fitpass_surcharge'`, **never** a membership; an ambiguous fallback warns and skips, the check-in still voids). (2) **m2** — the dashboard surcharge badge renders **per check-in** (`fetchDayCheckins` adds a `checkin_id` lookup, with the same exact-key fallback, so the group-Fitpass row shows its +300). (3) `record_payment` accepts `p_checkin_id` on the **membership** payment. Type regen touches only `payment` Row/Insert/Update + the new FK ([[db-types-custom-aliases]] preserved). See `DB.md` v1.17 / PRD v1.12–v1.13.
 > v1.16 aligns **§9 / §2.3 / §2.4 / §12** with the codebase (2026-06-19): `PaymentDialog` already forwards `checkinId` when the entry point supplies it (arrivals-row "Naplati" → `payment.checkin_id`; search / member card / pre-check-in dialog pass `null`). Etapa 2 remainder: pay-after-check-in link from the check-in dialog. Repo: **35** migrations; `lib/offline/` not yet created; `scripts/verify_payment_checkin_link.sql` added. See `PRD.md` §9 / `DB.md` v1.17.
+> v1.17 records **Admin Smene history UI** (2026-06-19; **no schema change**, `supabase db push` no-op): `(app)/(shell)/smene` — weekly shift history for Admins (`requireAdmin()` in layout; remote Admin without counter cookie included). URL: canonical `?date=` (defaults to Belgrade today; week = Mon–Sun containing that date); optional `?staff=` worker filter persists across date changes. Data: `fetchShiftHistory()` in `lib/shifts/queries.ts` (interval-overlap query on `shift`, grouped by Belgrade calendar day of `started_at`; worker day summaries; `nextStartedAtSameDay`; coverage gaps vs `[09:00, close]` with 5 min threshold and today capped at `min(now, close)`). Helpers: `lib/shifts/format.ts`, `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`, `weekStartMonday`, `addDays`). UI: `date-nav.tsx` (±7 days), `worker-filter.tsx`, `smene-client.tsx` (table + mobile cards). Export: `GET /api/admin/smene/export?date=&staff=` → `smene-<weekStart>.csv`. RLS: `shift SELECT = is_admin()` — authenticated cookie client only, no service-role. See `DB.md` v1.18 / PRD v1.14.
 
 ---
 
@@ -146,11 +147,14 @@ app/
       actions.ts, cene-client.tsx, price-cell.tsx, add-type-dialog.tsx
     pazar/                      # daily takings + Admin month/year (implemented)
       actions.ts, page.tsx, pazar-client.tsx, date-nav.tsx, takings-tabs.tsx, payment-row-actions.tsx
-    smene/                      # shifts admin view (stub page; lifecycle in lib/shifts/)
+    smene/                      # Admin shift history (implemented: weekly view, filter, CSV)
+      layout.tsx                # requireAdmin()
+      page.tsx, date-nav.tsx, worker-filter.tsx, smene-client.tsx
     nalozi/                     # accounts (admin) + counter-device toggle (implemented)
   api/
     admin/accounts/             # service-role account management (implemented)
     admin/pazar/export/         # Admin CSV export for takings (implemented)
+    admin/smene/export/         # Admin CSV export for shift history (implemented)
 components/
   ui/                           # shadcn primitives
   payment/payment-dialog.tsx    # shared cash-payment dialog (implemented)
@@ -159,7 +163,7 @@ lib/
   utils.ts                      # cn() + helpers
   nav.ts                        # sidebar nav items + active-state + page titles (implemented)
   auth/                         # session/role guards, username<->email, counter cookie, password reset (implemented)
-  shifts/                       # shift lifecycle server actions (implemented)
+  shifts/                       # shift lifecycle + history queries (implemented)
   members/                      # member zod schema, status derivation, types, formatting (implemented)
   catalog/                      # membership catalog view-models (implemented)
   dashboard/                    # dashboard queries, zod schemas, format (implemented)
@@ -168,7 +172,7 @@ lib/
     server-client.ts            # cached getServerSupabase() per RSC request (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
   offline/                      # IndexedDB queue + sync engine (planned — Phase 3; folder not in repo yet)
-  time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts)
+  time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts — belgradeDayOf, belgradeInstant, weekStartMonday, addDays)
 utils/
   supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
@@ -284,7 +288,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - **Route groups** (`app/(app)/`):
   - **`(shell)/`** — sidebar shell; gate in `(shell)/layout.tsx`:
     - **Worker + counter cookie** → full operations; `openOrResumeShift()` on load.
-    - **Admin + no counter** → remote admin: dashboard overview, članovi CRUD, cene, nalozi, pazar read/export/reconcile; **no** check-in/uplata (`requireCounterToday()`).
+    - **Admin + no counter** → remote admin: dashboard overview, članovi CRUD, cene, nalozi, pazar read/export/reconcile, **smene** shift history; **no** check-in/uplata (`requireCounterToday()`).
     - **Worker + no counter** → redirect to `/samo-salter` (no sidebar).
   - **`/samo-salter`** — minimal page for workers off-counter (message + logout only).
 - **Accepted risk (counter cookie payload):** the signed `gym_counter` cookie payload is the constant `"1"`, so the resulting signed string is **identical on every counter device** and does not bind to a hardware/device identity. The HMAC (keyed by `COUNTER_DEVICE_SECRET`) makes it unforgeable without the secret, and the cookie is `httpOnly` + `secure` (production), so the practical exposure is limited to **copying the signed cookie value from the real counter to another device** — which would promote that device to "šalter". This is **accepted** for the current single-gym / single-physical-counter threat model. If stronger binding is ever needed, embed a per-device id / nonce in the HMAC payload (`lib/auth/counter.ts`) and validate it server-side.
@@ -322,6 +326,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - **Admin reconcile:** badge in sidebar/header; `/dashboard?unassigned=1` and `/pazar?unassigned=1` with assign/waive actions (`lib/shifts/reconcile-actions.ts`).
 - **Counter guard:** `isCounterDevice()` — remote admin sessions skip shift RPCs and banner.
 - **Safety net:** `pg_cron` `auto_close_shifts()` — see `DB.md` §8.
+- **Admin history (`/smene`):** implemented (v1.17). `smene/layout.tsx` calls `requireAdmin()`; page uses `requireUser()` only for session (RLS is the data guard). **`fetchShiftHistory(weekStart, staffId?)`** (`lib/shifts/queries.ts`) loads shifts whose interval overlaps the Mon–Sun week (Belgrade midnight boundaries via `belgradeInstant`), groups rows by Belgrade calendar day of `started_at` (whole shift stays in start day — no midnight split), and computes per-day worker summaries, chronological rows with `nextStartedAtSameDay`, and coverage gaps (open 09:00 → close Mon–Fri 21:00 / Sat 18:00 / Sun 16:00; gaps ≥ 5 min). Open shifts show badge **„U toku"**; duration computed server-side to request time (no auto-refresh). **`fetchStaffForShiftFilter()`** lists workers for the dropdown. Formatting in `lib/shifts/format.ts`. Week nav ±7 days on `?date=` (`date-nav.tsx`); worker filter on `?staff=` (`worker-filter.tsx`). Responsive table / mobile cards (`smene-client.tsx`). CSV: **`GET /api/admin/smene/export`** (`getAdminOrNull()` → 403). Remote Admin (no `gym_counter` cookie) has full read access — no counter guard on this route.
 
 ---
 
@@ -366,9 +371,9 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Takings ("pazar") | **(implemented)** `(app)/pazar`: daily table + net total; Admin month/year tabs; RLS gates past-day edits for workers |
 | Payment void + membership revert | **(implemented)** RPC `void_payment`; UI on `/pazar` + member card (`payment-row-actions`); membership delete blocked if used |
 | Queued renewal (`zakazana`) | **(implemented)** payment while active creates `zakazana`; `promote_memberships()` pg_cron promotes oldest when prior membership ends |
-| Reports export (Admin) | **(implemented)** `GET /api/admin/pazar/export` → CSV |
+| Reports export (Admin) | **(implemented)** `GET /api/admin/pazar/export` → CSV; `GET /api/admin/smene/export` → shift-history CSV |
 | Prices admin | **(implemented)** `(app)/cene`: tabbed by `training_category`, inline price edit (Admin), add/deactivate types & categories; read-only for workers. Server actions in `cene/actions.ts`; view-models in `lib/catalog/` |
-| Shifts | **(runtime implemented)** §5 — open/handover/end, auto-close, reconcile; **`/smene` history UI stub** (Phase 2) |
+| Shifts | **(implemented)** §5 — runtime (open/handover/end, auto-close, reconcile) + **Admin history UI** at `/smene` (weekly view, worker filter, coverage gaps, CSV export) |
 | Notifications | In-app only via toasts/badges (`sonner`); no email/SMS to members |
 
 ---
@@ -427,11 +432,11 @@ Deploy handoff (`c0fd532` on `main`; `supabase db push` no-op at alignment deplo
 - [x] Wrong password → generic *"Neispravno korisničko ime ili lozinka."*
 - [x] Disabled account (correct password) → **same** generic message (no enumeration)
 - [x] Worker without `gym_counter` cookie → `/samo-salter`, no sidebar
-- [x] Admin remote (no counter) → dashboard overview, članovi, cene, nalozi, pazar + CSV; no check-in / `recordPayment`
+- [x] Admin remote (no counter) → dashboard overview, članovi, cene, nalozi, pazar + CSV, smene; no check-in / `recordPayment`
 - [x] `has_open_shift()` RPC exists once; logout bundle includes **Završi smenu** / **Odjava** (counter UI — confirm manually in browser)
 - [x] Last-active-admin guard: 2 active admins; API/UI block on sole admin disable/demote
 - [x] Sidebar labels: Dashboard, Cene članarina, Dnevne uplate / Pazar
-- [x] `/smene` stub (expected, not a bug)
+- [x] `/smene` Admin shift history (weekly view, filter, CSV export)
 
 ### Deployment incidents & lessons (first prod deploy, 2026-06-18)
 
@@ -479,6 +484,6 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 
 ## 12. Phased delivery (maps to SoW)
 - **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
-- **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, partial `payment.checkin_id` from arrivals row (`/pazar`, §2.4).
-- **Phase 2 — Advanced**: pause/resume; **Smene** Admin history UI (`/smene` stub); key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7); payment ↔ check-in Etapa 2 remainder (pay after `create_checkin` from check-in dialog). *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge void, payment void + membership revert, monthly/yearly takings + Admin export, shift runtime + reconcile, remote admin overview — **done**.)*
+- **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, partial `payment.checkin_id` from arrivals row (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
+- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7); payment ↔ check-in Etapa 2 remainder (pay after `create_checkin` from check-in dialog). *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge void, payment void + membership revert, monthly/yearly takings + Admin export, shift runtime + reconcile + history UI, remote admin overview — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync (`lib/offline/`); automatic USB backup 3×/day (`scripts/backup-usb.mjs`).
