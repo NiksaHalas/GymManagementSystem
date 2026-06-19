@@ -21,6 +21,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.14 — **no schema change.** Records **Phase 1b Cene review follow-ups** (2026-06-19): code-only cleanup on the prices feature — shared catalog sort helper, cached RSC client on `/cene` + `/nalozi`, removed unused catalog server actions/schemas, and readable Serbian errors for new-category slug collision / empty name. No tables, RPCs, or RLS touched. See `Tech.md` v1.13.
 > v1.15 — **Phase 1c Dashboard review follow-ups** (2026-06-19). Migration `20260619120000_checkin_trainer_no_package` (`create or replace` on two RPCs; **no table/RLS change**, `create_checkin` signature unchanged so no type regen): (1) `create_checkin` now models the trainer session **by training category** — it deducts only from an active trainer-based membership of the **same** category with `sessions_left > 0`, otherwise inserts a `reserved_session` (so members with no package or a non-trainer/expired package — PRD §3.5 "or no active package" — are handled and sessions never spill across categories); `checkin.membership_id` is the same-category active membership or `null` (S0/S3). Missing daily price raises custom SQLSTATE **`GYM01`** (readable Serbian); a category that mismatches an active trainer-based membership raises **`GYM02`** (defense-in-depth, UI never sends it). (2) `void_checkin`'s `first_visit` revert is now **member-scoped** (finds the member's first-visit membership activated on that `business_date`) instead of keyed on `checkin.membership_id`, so a reserved trainer check-in (`membership_id` null) that triggered the activation is still reverted on void. Applied via `supabase db push`. See `Tech.md` v1.14 / PRD §3.5.
 > v1.16 — **Regression fix** (2026-06-19). Migration `20260619130000_checkin_shift_id_regression_fix` (`create or replace` on `create_checkin`; no table/RLS change): v1.15's `create_checkin` was rebased on the pre-shift-attribution body and dropped the **`shift_id`** assignment that `20260617100700` (§12.4) had added, so new check-ins and the group-Fitpass surcharge payment were written with `shift_id = NULL` (false "pending attribution"). Restores `v_shift_id` (caller's open shift) on both the `checkin` and the `fitpass_surcharge` `payment` inserts, keeping the Krug-1 category logic intact. No mis-attributed rows existed to backfill. Applied via `supabase db push`.
+> v1.17 — **Payment ↔ Check-in veza (Etapa 1)** (2026-06-19). Migration `20260619140000_payment_checkin_link`: adds **`payment.checkin_id`** (`references checkin on delete set null`) + plain index + a **partial unique index** `payment_fitpass_surcharge_checkin_uidx on payment (checkin_id) where kind = 'fitpass_surcharge' and not voided` (one live surcharge per arrival, re-charge allowed after void). `create_checkin` now writes `checkin_id` on the group-Fitpass surcharge payment; **`void_checkin`** reverses that surcharge (two-stage: FK → exact-key fallback, only `kind='fitpass_surcharge'`, never a membership) — fixes the M1 bug where voiding a group Fitpass arrival left +300 RSD in the day's takings (regression since `20260617100300`). `record_payment` now writes `p_checkin_id` on the membership payment (forward plumbing; no-op until `PaymentDialog` sends it — Etapa 2). Backfill links existing surcharge rows by exact key (incl. voided arrivals); a retroactive ledger pass voids live surcharges whose arrival was already voided (`voided_by`/`voided_at` copied from the check-in). Dashboard surcharge badge now renders per check-in (m2). Applied via `supabase db push`. See `Tech.md` v1.15 / PRD §3.8.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -314,6 +315,7 @@ create table payment (
   shift_id           uuid references shift (id) on delete set null,       -- nullable pending attribution
   membership_type_id bigint references membership_type (id) on delete restrict,
   membership_id      uuid references membership (id) on delete set null,  -- created/extended membership (for revert)
+  checkin_id         uuid references checkin (id) on delete set null,     -- arrival that generated this charge (group Fitpass surcharge; future membership)
   kind               payment_kind not null default 'membership',
   amount_rsd         int not null check (amount_rsd >= 0),                 -- 0 allowed for non-group Fitpass check-in record
   is_custom_price    boolean not null default false,                      -- custom must be < standard and > 0
@@ -337,17 +339,21 @@ create index payment_member_id_idx          on payment (member_id);
 create index payment_staff_id_idx            on payment (staff_id);
 create index payment_membership_type_id_idx  on payment (membership_type_id);
 create index payment_membership_id_idx       on payment (membership_id);
+create index payment_checkin_id_idx          on payment (checkin_id);
 create index payment_created_by_idx          on payment (created_by);
 create index payment_voided_by_idx           on payment (voided_by);
 -- daily/monthly/yearly takings: scan by business_date, exclude voided
 create index payment_shift_id_idx            on payment (shift_id);
 create index payment_pending_attribution_idx on payment (created_at)
   where shift_id is null and waived_at is null;
+-- one live group-Fitpass surcharge per check-in (re-charge allowed after void)
+create unique index payment_fitpass_surcharge_checkin_uidx on payment (checkin_id)
+  where kind = 'fitpass_surcharge' and not voided;
 ```
 - **Takings ("pazar")** = sum of `amount_rsd` grouped by `business_date` where `not voided` (net total).
 - **`kind='membership'`** — creates or queues a `membership` row; links `membership_id` for revert on void.
 - **`kind='debt_settlement'`** — one payment row **per** unsettled `reserved_session`; links via `reserved_session.settled_payment_id`.
-- **`kind='fitpass_surcharge'`** — anonymous group Fitpass +300 RSD; `member_id` null, `is_fitpass=true`.
+- **`kind='fitpass_surcharge'`** — anonymous group Fitpass +300 RSD; `member_id` null, `is_fitpass=true`. Carries **`checkin_id`** (the generating arrival) so `void_checkin` can reverse it; a partial unique index guarantees one live surcharge per check-in.
 - **Void** sets `voided=true` (kept in history). `void_payment` RPC reverts: unsettles linked debts; deletes unused `membership` rows (blocks if check-ins/session_log exist).
 - **Custom price** enforced in RPC: `0 < amount_rsd < offered price` when `is_custom_price=true`; offered price uses discount row when `member.discount_flag` + `otvoreni` category.
 - **Supabase embeds**: `payment` has four FKs to `staff` (`staff_id`, `created_by`, `voided_by`, `updated_by`). Join the cashier as `staff!payment_staff_id_fkey`.
@@ -766,6 +772,7 @@ Soft-voids a check-in (`voided = true`, audit columns). **Workers**: same busine
 - Restores +1 session if `decremented_session` (and `checkin.membership_id` is set).
 - Deletes linked `session_log` and unsettled `reserved_session`.
 - May clear `first_visit` activation if this was the member's only non-voided check-in — **member-scoped** (v1.15): finds the member's `first_visit` membership whose `start_date` equals this check-in's `business_date`, not keyed on `checkin.membership_id`, so a reserved trainer check-in (`membership_id` null) that triggered the activation is also reverted.
+- **Poništava vezanu `fitpass_surcharge` uplatu** (v1.17) — only the auto-generated +300 surcharge, **never** a membership payment. Two-stage match: by `payment.checkin_id` first; an exact-key fallback (`business_date` + `staff_id` + `created_at`, no `shift_id`) only when the FK finds nothing (legacy rows). An ambiguous fallback (>1 candidate) raises a `WARNING` and skips the auto-void; the check-in still voids.
 
 Voided rows are excluded from day lists and from `checkin_open_key_idx` (key occupancy).
 
@@ -788,7 +795,7 @@ Atomically records cash payment(s). Returns the primary payment id (membership p
 | `p_amount_rsd` / `p_is_custom_price` / `p_custom_reason` | Membership amount; custom must be `0 < amount < offered` |
 | `p_start_mode` | `'payment'` or `'first_visit'` when no active membership; ignored for `zakazana` |
 | `p_settle_reserved_ids` | UUID[] of unsettled `reserved_session` rows to settle (one `debt_settlement` payment each) |
-| `p_checkin_id` | Optional logical link (does not mutate check-in) |
+| `p_checkin_id` | Written to `payment.checkin_id` on the **membership** payment (v1.17); not on `debt_settlement` (that link lives on `reserved_session`). No-op until `PaymentDialog` sends it (Etapa 2). Does not mutate the check-in. |
 | `p_business_date` | Defaults to `business_today()` |
 
 **Side effects**:

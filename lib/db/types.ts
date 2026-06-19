@@ -425,6 +425,7 @@ export type Database = {
         Row: {
           amount_rsd: number
           business_date: string
+          checkin_id: string | null
           created_at: string
           created_by: string | null
           custom_reason: string | null
@@ -450,6 +451,7 @@ export type Database = {
         Insert: {
           amount_rsd: number
           business_date: string
+          checkin_id?: string | null
           created_at?: string
           created_by?: string | null
           custom_reason?: string | null
@@ -475,6 +477,7 @@ export type Database = {
         Update: {
           amount_rsd?: number
           business_date?: string
+          checkin_id?: string | null
           created_at?: string
           created_by?: string | null
           custom_reason?: string | null
@@ -498,6 +501,13 @@ export type Database = {
           waived_by?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "payment_checkin_id_fkey"
+            columns: ["checkin_id"]
+            isOneToOne: false
+            referencedRelation: "checkin"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "payment_created_by_fkey"
             columns: ["created_by"]
