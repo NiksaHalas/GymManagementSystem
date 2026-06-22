@@ -53,7 +53,7 @@ interface CheckinDialogProps {
   staffOptions: StaffOption[];
   trainerCategories: TrainerCheckinCategory[];
   occupiedOpenKeys: number[];
-  onPayMembership?: () => void;
+  onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
 }
 
@@ -97,7 +97,7 @@ interface CheckinDialogFormProps {
   staffOptions: StaffOption[];
   trainerCategories: TrainerCheckinCategory[];
   occupiedOpenKeys: number[];
-  onPayMembership?: () => void;
+  onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
 }
 
@@ -121,6 +121,7 @@ function CheckinDialogForm({
   const [pending, setPending] = React.useState(false);
   const [commentAckOpen, setCommentAckOpen] = React.useState(false);
   const [s3ConfirmOpen, setS3ConfirmOpen] = React.useState(false);
+  const [lastCheckinId, setLastCheckinId] = React.useState<string | null>(null);
   const commentShownRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -219,8 +220,10 @@ function CheckinDialogForm({
         toast.success("Dolazak je zabeležen.");
       }
 
-      onOpenChange(false);
+      setLastCheckinId(res.id);
       router.refresh();
+      setKeyNo(null);
+      setNoKey(false);
     } finally {
       setPending(false);
       setS3ConfirmOpen(false);
@@ -258,6 +261,11 @@ function CheckinDialogForm({
             {ctx.unsettledReservedCount > 0 && (
               <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-700 dark:text-amber-400">
                 Dužnih termina: {ctx.unsettledReservedCount}
+              </span>
+            )}
+            {lastCheckinId != null && (
+              <span className="text-green-700 dark:text-green-400 text-xs">
+                Dolazak snimljen ✓
               </span>
             )}
           </div>
@@ -381,7 +389,7 @@ function CheckinDialogForm({
           <Button
             type="button"
             variant="secondary"
-            onClick={onPayMembership}
+            onClick={() => onPayMembership?.(lastCheckinId)}
             disabled={pending || loading || !ctx}
           >
             Naplati članarinu

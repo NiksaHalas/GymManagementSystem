@@ -105,8 +105,12 @@ export function DashboardCounter({
             staffOptions={staffOptions}
             trainerCategories={trainerCategories}
             occupiedOpenKeys={occupiedOpenKeys}
-            onPayMembership={() => {
-              if (checkinMemberId) openPayment(checkinMemberId);
+            onPayMembership={(checkinId) => {
+              const mid = checkinMemberId;
+              if (!mid) return;
+              setCheckinOpen(false);
+              setCheckinMemberId(null);
+              openPayment(mid, checkinId);
             }}
             paymentRefreshKey={paymentRefreshKey}
           />
