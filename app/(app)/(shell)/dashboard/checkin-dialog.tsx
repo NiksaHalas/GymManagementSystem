@@ -224,6 +224,11 @@ function CheckinDialogForm({
       router.refresh();
       setKeyNo(null);
       setNoKey(false);
+
+      // Paused members have no pay-after-check-in flow here; close to avoid duplicate arrivals.
+      if (ctx.membershipStatus === "paused") {
+        onOpenChange(false);
+      }
     } finally {
       setPending(false);
       setS3ConfirmOpen(false);
