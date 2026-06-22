@@ -183,7 +183,7 @@ function CheckinDialogForm({
     if (!validate() || !ctx) return;
     // S3: member has an active (non-trainer) membership but the trainer session
     // is not covered by it → confirm before recording a debt.
-    if (withTrainer && needsManualCategory && ctx.membershipId != null) {
+    if (withTrainer && needsManualCategory && ctx.membershipId != null && ctx.membershipStatus !== "paused") {
       setS3ConfirmOpen(true);
       return;
     }
@@ -316,6 +316,13 @@ function CheckinDialogForm({
             </div>
           </div>
 
+          {ctx.membershipStatus === "paused" && (
+            <p className="text-amber-600 dark:text-amber-400 text-xs">
+              Članarina je pauzirana — dolazak se snima bez naplate i bez trošenja
+              sesije.
+            </p>
+          )}
+
           <div className="space-y-2 rounded-md border p-3">
             <div className="flex items-center gap-2">
               <Checkbox
@@ -364,7 +371,8 @@ function CheckinDialogForm({
                     ))}
                   </SelectContent>
                 </Select>
-                {(needsManualCategory || (ctx.sessionsLeft ?? 0) <= 0) && (
+                {(needsManualCategory || (ctx.sessionsLeft ?? 0) <= 0) &&
+                  ctx.membershipStatus !== "paused" && (
                   <p className="text-amber-600 dark:text-amber-400 text-xs">
                     {needsManualCategory
                       ? "Nema aktivne članarine za ovu kategoriju — biće rezervisano kao dužan termin."

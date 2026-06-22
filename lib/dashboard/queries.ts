@@ -161,6 +161,18 @@ export async function fetchDayCheckins(
     ),
   ];
 
+  const pausedMemberIds = new Set<string>();
+  if (memberIds.length > 0) {
+    const { data: pausedMemberships } = await supabase
+      .from("membership")
+      .select("member_id")
+      .in("member_id", memberIds)
+      .eq("status", "pauzirana");
+    for (const m of pausedMemberships ?? []) {
+      if (m.member_id) pausedMemberIds.add(m.member_id);
+    }
+  }
+
   const paymentsByMember = new Map<
     string,
     { amount_rsd: number; kind: string; membership_type: { label: string } | null }
@@ -258,6 +270,7 @@ export async function fetchDayCheckins(
       membershipLabel: c.membership?.membership_type?.label ?? null,
       membershipStatus: status.kind,
       membershipStatusLabel: status.label,
+      membershipPaused: c.member_id != null && pausedMemberIds.has(c.member_id),
       trainingCategoryLabel: c.training_category?.label ?? null,
       trainerUsername: c.trainer_id ? trainerMap.get(c.trainer_id) ?? null : null,
       paymentToday: payment

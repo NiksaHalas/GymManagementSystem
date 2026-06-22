@@ -254,6 +254,11 @@ function PaymentDialogForm({
         <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="rounded-md bg-muted px-2 py-1">{status.label}</span>
+            {ctx.currentMembership?.status === "pauzirana" && (
+              <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-700 dark:text-amber-400">
+                Članarina je pauzirana — nova uplata kreira zakazanu članarinu.
+              </span>
+            )}
             {ctx.scheduledMemberships.length > 0 && (
               <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-700 dark:text-amber-400">
                 {ctx.scheduledMemberships.length} zakazana članarina

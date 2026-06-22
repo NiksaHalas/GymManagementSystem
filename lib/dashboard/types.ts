@@ -31,6 +31,7 @@ export interface DashboardCheckinRow {
   trainingCategoryLabel: string | null;
   trainerUsername: string | null;
   paymentToday: DayPaymentSummary | null;
+  membershipPaused: boolean;
   shiftId: string | null;
   pendingAttribution: boolean;
 }

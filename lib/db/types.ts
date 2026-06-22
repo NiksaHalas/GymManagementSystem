@@ -929,7 +929,9 @@ export type Database = {
         Returns: number
       }
       open_or_resume_shift: { Args: never; Returns: string }
+      pause_membership: { Args: { p_membership_id: string }; Returns: undefined }
       promote_memberships: { Args: never; Returns: undefined }
+      resume_membership: { Args: { p_membership_id: string }; Returns: undefined }
       record_payment: {
         Args: {
           p_amount_rsd?: number

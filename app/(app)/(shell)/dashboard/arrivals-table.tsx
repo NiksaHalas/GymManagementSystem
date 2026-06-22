@@ -189,6 +189,11 @@ export function ArrivalsTable({
                       Istekla članarina
                     </Badge>
                   )}
+                  {row.membershipPaused && !row.isFitpass && (
+                    <Badge variant="outline" className="text-xs text-amber-600">
+                      Pauzirana članarina
+                    </Badge>
+                  )}
                   {row.withTrainer && (
                     <Badge variant="secondary" className="text-xs">
                       Trener

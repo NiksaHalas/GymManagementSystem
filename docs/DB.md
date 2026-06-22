@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.19
+Version: 1.20
 Date: 2026-06-22
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -24,6 +24,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.17 — **Payment ↔ Check-in veza (Etapa 1 + partial Etapa 2)** (2026-06-19). Migration `20260619140000_payment_checkin_link`: adds **`payment.checkin_id`** (`references checkin on delete set null`) + plain index + a **partial unique index** `payment_fitpass_surcharge_checkin_uidx on payment (checkin_id) where kind = 'fitpass_surcharge' and not voided` (one live surcharge per arrival, re-charge allowed after void). `create_checkin` now writes `checkin_id` on the group-Fitpass surcharge payment; **`void_checkin`** reverses that surcharge (two-stage: FK → exact-key fallback, only `kind='fitpass_surcharge'`, **never** a membership payment) — fixes the M1 bug where voiding a group Fitpass arrival left +300 RSD in the day's takings (regression since `20260617100300`). `record_payment` writes `p_checkin_id` on the **membership** payment when the app passes it (`PaymentDialog` → `recordPayment` from the arrivals-row "Naplati" path; search / member card / pre-check-in dialog pass `null` by design). Verification script: `scripts/verify_payment_checkin_link.sql`. Backfill links existing surcharge rows by exact key (incl. voided arrivals); a retroactive ledger pass voids live surcharges whose arrival was already voided (`voided_by`/`voided_at` copied from the check-in). Dashboard surcharge badge renders per check-in (m2). Repo: **35** migration files in `supabase/migrations/` (ledger count at deploy time — see `Tech.md` §9). Applied via `supabase db push`. See `Tech.md` v1.15–v1.16 / PRD §9.
 > v1.18 — **no schema change.** Records **Admin Smene history UI** (2026-06-19): `(app)/(shell)/smene` replaces the Phase 2 stub with a weekly shift-history view (Mon–Sun via `?date=`, optional `?staff=` filter, coverage-gap warnings vs gym hours 09:00–close, CSV export `GET /api/admin/smene/export`). Reads existing `shift` rows only — **`shift SELECT = is_admin()`** (§5.1); no new tables, RPCs, or migrations. App queries via `lib/shifts/queries.ts` (`fetchShiftHistory`, interval-overlap on `started_at`/`ended_at`); Belgrade day boundaries via `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`). Deployed with app code; `supabase db push` was a **no-op** (ledger still **35/35** 1:1). See `Tech.md` v1.17 / PRD v1.14.
 > v1.19 — **no schema change.** Records **Payment ↔ Check-in Etapa 2 complete** (2026-06-22): app layer (`lib/dashboard/payment-checkin-link.ts`) auto-writes `payment.checkin_id` on membership payments for the same member + `business_date` when UI passes `null` — pay-first (`linkOrphanPaymentToCheckin` after `create_checkin`) or check-in-first (`resolveCheckinIdForPayment` before `record_payment`). Explicit `p_checkin_id` from UI unchanged. No new partial unique index on membership↔checkin (only `fitpass_surcharge` has one). `void_checkin` still never auto-voids membership payments. See `Tech.md` v1.18 / PRD v1.15.
+> v1.20 — **Pause / resume membership** (2026-06-22). Migration `20260622120000_pause_resume_membership`: adds RPCs **`pause_membership`** / **`resume_membership`** (§11.4, SQLSTATE **`GYM03`** / **`GYM04`**); **`create_checkin`** paused branch — arrival recorded, `checkin.membership_id = NULL`, no session deduction / `reserved_session` / first-visit activation while `status='pauzirana'` (§10.2). Verification script: `scripts/verify_pause_resume.sql`. Repo: **36** migration files. See `Tech.md` v1.19 / PRD v1.16.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -760,6 +761,7 @@ Atomically inserts a `checkin` row and applies side effects:
 | `p_business_date` | Defaults to `business_today()` |
 
 **Side effects** (when applicable) — trainer session is modelled **by training category** (v1.15):
+- **Paused membership** (`status='pauzirana'`, v1.20): record the arrival only — `checkin.membership_id = null`; no session decrement, no `session_log`, no `reserved_session`, no first-visit activation. `with_trainer` / `trainer_id` / `training_category_id` are still written on the check-in row for history.
 - Active **trainer-based** membership of the **same** `p_training_category_id` with `sessions_left > 0` → decrement `membership.sessions_left`, insert `session_log`, set `decremented_session = true`; `checkin.membership_id` = that membership.
 - Active trainer-based membership of the same category with 0 sessions → insert `reserved_session` with `amount_rsd = capture_daily_price(...)`; `checkin.membership_id` = that membership.
 - **No active trainer-based membership of that category** (no package, or a non-trainer/expired package — PRD §3.5 "or no active package") → insert `reserved_session` with the chosen category; `checkin.membership_id = null`. Sessions never transfer between categories.
@@ -811,6 +813,18 @@ Soft-voids a payment. **Workers**: same business day only; **admins**: any day. 
 **Reverts**:
 - `debt_settlement` → unsettle linked `reserved_session`.
 - `membership` with unused linked membership → `delete from membership` (raises if check-ins or `session_log` exist).
+
+### 11.4 `pause_membership(p_membership_id uuid) → void` / `resume_membership(p_membership_id uuid) → void`
+
+Migration `20260622120000_pause_resume_membership`. **`security definer`**; `EXECUTE` granted to `authenticated` only.
+
+**`pause_membership`** — freezes an active membership (PRD §3.4):
+- Guards: member not archived; `status='aktivna'`; `start_date IS NOT NULL` (first-visit not yet activated is not pausable). `FOR UPDATE` lock.
+- Sets `status='pauzirana'`, `paused_at=now()`. Errors → SQLSTATE **`GYM03`** (readable Serbian message).
+
+**`resume_membership`** — resumes a paused membership:
+- Guards: member not archived; `status='pauzirana'` and `paused_at IS NOT NULL`.
+- `v_days = business_today() − belgradeDay(paused_at)` (same-day = 0); `paused_days += v_days`; if `end_date IS NOT NULL` → `end_date += v_days`; `sessions_left` untouched; status → `'aktivna'` (even if new `end_date` is past — nightly `promote_memberships()` flips to `istekla`). Does not touch `zakazana` rows. Errors → SQLSTATE **`GYM04`**.
 
 ---
 

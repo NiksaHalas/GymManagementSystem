@@ -131,7 +131,9 @@ export async function createMemberCheckin(
   );
 
   const reserved =
-    withTrainer && (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
+    ctx.membershipStatus !== "paused" &&
+    withTrainer &&
+    (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
 
   revalidateDashboard();
   return { ok: true, id: checkinId, reserved };

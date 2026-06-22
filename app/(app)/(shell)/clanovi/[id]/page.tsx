@@ -29,10 +29,11 @@ import {
 import { DiscountToggle, CommentEditor } from "./quick-edits";
 import { EditMemberDialog } from "./edit-member-dialog";
 import { ArchiveControls } from "./archive-controls";
+import { MembershipPauseControls } from "./membership-pause-controls";
 import { MemberPayButton } from "./member-pay-button";
 import { PaymentRowActions } from "@/app/(app)/(shell)/pazar/payment-row-actions";
 import { fetchScheduledMemberships } from "@/lib/pazar/queries";
-import { businessToday } from "@/lib/time/business-day";
+import { businessToday, belgradeDayOf } from "@/lib/time/business-day";
 import { paymentKindLabel } from "@/lib/pazar/format";
 import type { PaymentRow } from "@/lib/pazar/types";
 
@@ -246,6 +247,7 @@ export default async function MemberCardPage({
         </CardHeader>
         <CardContent>
           {activeMembership ? (
+            <>
             <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
               <div>
                 <dt className="text-muted-foreground">Tip</dt>
@@ -277,7 +279,34 @@ export default async function MemberCardPage({
                     : activeMembership.sessions_left ?? "—"}
                 </dd>
               </div>
+              {activeMembership.status === "pauzirana" && (
+                <>
+                  <div>
+                    <dt className="text-muted-foreground">Pauzirano od</dt>
+                    <dd>
+                      {activeMembership.paused_at
+                        ? formatDate(belgradeDayOf(activeMembership.paused_at))
+                        : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Ukupno pauziranih dana</dt>
+                    <dd>{activeMembership.paused_days}</dd>
+                  </div>
+                </>
+              )}
             </dl>
+            <div className="mt-4">
+              <MembershipPauseControls
+                membershipId={activeMembership.id}
+                memberId={member.id}
+                status={activeMembership.status}
+                endDate={activeMembership.end_date}
+                pausedAt={activeMembership.paused_at}
+                pausedDays={activeMembership.paused_days}
+              />
+            </div>
+            </>
           ) : (
             <p className="text-sm text-muted-foreground">Nema aktivne članarine.</p>
           )}

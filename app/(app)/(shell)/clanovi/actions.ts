@@ -15,6 +15,14 @@ const RESTORE_ADMIN_ONLY_ERROR = "Samo administrator može vratiti člana iz arh
 const ARCHIVE_DEBT_ERROR =
   "Član ima neizmirene rezervisane (dužne) termine. Izmirite ih pre arhiviranja.";
 
+/** Maps pause/resume RPC errors (GYM03/GYM04 carry readable Serbian messages). */
+function mapPauseError(error: { code?: string; message: string }): string {
+  if (error.code === "GYM03" || error.code === "GYM04") {
+    return error.message;
+  }
+  return error.message;
+}
+
 /** Maps DB constraint/trigger violations to readable messages; otherwise the raw error. */
 function mapMemberWriteError(error: { code?: string; message: string }): string {
   if (error.code === "23505" || error.message.includes("member_phone_digits_uidx")) {
@@ -205,6 +213,40 @@ export async function archiveMember(id: string): Promise<ActionResult> {
 
   revalidatePath("/clanovi");
   revalidatePath(`/clanovi/${id}`);
+  return { ok: true };
+}
+
+/** Pauses an active membership (PRD §3.4). Any worker. */
+export async function pauseMembership(
+  membershipId: string,
+  memberId: string,
+): Promise<ActionResult> {
+  await requireUser();
+  const supabase = await getClient();
+  const { error } = await supabase.rpc("pause_membership", {
+    p_membership_id: membershipId,
+  });
+  if (error) return { ok: false, error: mapPauseError(error) };
+  revalidatePath("/clanovi");
+  revalidatePath(`/clanovi/${memberId}`);
+  revalidatePath("/dashboard");
+  return { ok: true };
+}
+
+/** Resumes a paused membership; extends end_date by elapsed paused days. */
+export async function resumeMembership(
+  membershipId: string,
+  memberId: string,
+): Promise<ActionResult> {
+  await requireUser();
+  const supabase = await getClient();
+  const { error } = await supabase.rpc("resume_membership", {
+    p_membership_id: membershipId,
+  });
+  if (error) return { ok: false, error: mapPauseError(error) };
+  revalidatePath("/clanovi");
+  revalidatePath(`/clanovi/${memberId}`);
+  revalidatePath("/dashboard");
   return { ok: true };
 }
 
