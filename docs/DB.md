@@ -1,7 +1,7 @@
 # DB — Database Schema
 
-Version: 1.18
-Date: 2026-06-19
+Version: 1.19
+Date: 2026-06-22
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
@@ -23,6 +23,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.16 — **Regression fix** (2026-06-19). Migration `20260619130000_checkin_shift_id_regression_fix` (`create or replace` on `create_checkin`; no table/RLS change): v1.15's `create_checkin` was rebased on the pre-shift-attribution body and dropped the **`shift_id`** assignment that `20260617100700` (§12.4) had added, so new check-ins and the group-Fitpass surcharge payment were written with `shift_id = NULL` (false "pending attribution"). Restores `v_shift_id` (caller's open shift) on both the `checkin` and the `fitpass_surcharge` `payment` inserts, keeping the Krug-1 category logic intact. No mis-attributed rows existed to backfill. Applied via `supabase db push`.
 > v1.17 — **Payment ↔ Check-in veza (Etapa 1 + partial Etapa 2)** (2026-06-19). Migration `20260619140000_payment_checkin_link`: adds **`payment.checkin_id`** (`references checkin on delete set null`) + plain index + a **partial unique index** `payment_fitpass_surcharge_checkin_uidx on payment (checkin_id) where kind = 'fitpass_surcharge' and not voided` (one live surcharge per arrival, re-charge allowed after void). `create_checkin` now writes `checkin_id` on the group-Fitpass surcharge payment; **`void_checkin`** reverses that surcharge (two-stage: FK → exact-key fallback, only `kind='fitpass_surcharge'`, **never** a membership payment) — fixes the M1 bug where voiding a group Fitpass arrival left +300 RSD in the day's takings (regression since `20260617100300`). `record_payment` writes `p_checkin_id` on the **membership** payment when the app passes it (`PaymentDialog` → `recordPayment` from the arrivals-row "Naplati" path; search / member card / pre-check-in dialog pass `null` by design). Verification script: `scripts/verify_payment_checkin_link.sql`. Backfill links existing surcharge rows by exact key (incl. voided arrivals); a retroactive ledger pass voids live surcharges whose arrival was already voided (`voided_by`/`voided_at` copied from the check-in). Dashboard surcharge badge renders per check-in (m2). Repo: **35** migration files in `supabase/migrations/` (ledger count at deploy time — see `Tech.md` §9). Applied via `supabase db push`. See `Tech.md` v1.15–v1.16 / PRD §9.
 > v1.18 — **no schema change.** Records **Admin Smene history UI** (2026-06-19): `(app)/(shell)/smene` replaces the Phase 2 stub with a weekly shift-history view (Mon–Sun via `?date=`, optional `?staff=` filter, coverage-gap warnings vs gym hours 09:00–close, CSV export `GET /api/admin/smene/export`). Reads existing `shift` rows only — **`shift SELECT = is_admin()`** (§5.1); no new tables, RPCs, or migrations. App queries via `lib/shifts/queries.ts` (`fetchShiftHistory`, interval-overlap on `started_at`/`ended_at`); Belgrade day boundaries via `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`). Deployed with app code; `supabase db push` was a **no-op** (ledger still **35/35** 1:1). See `Tech.md` v1.17 / PRD v1.14.
+> v1.19 — **no schema change.** Records **Payment ↔ Check-in Etapa 2 complete** (2026-06-22): app layer (`lib/dashboard/payment-checkin-link.ts`) auto-writes `payment.checkin_id` on membership payments for the same member + `business_date` when UI passes `null` — pay-first (`linkOrphanPaymentToCheckin` after `create_checkin`) or check-in-first (`resolveCheckinIdForPayment` before `record_payment`). Explicit `p_checkin_id` from UI unchanged. No new partial unique index on membership↔checkin (only `fitpass_surcharge` has one). `void_checkin` still never auto-voids membership payments. See `Tech.md` v1.18 / PRD v1.15.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -316,7 +317,7 @@ create table payment (
   shift_id           uuid references shift (id) on delete set null,       -- nullable pending attribution
   membership_type_id bigint references membership_type (id) on delete restrict,
   membership_id      uuid references membership (id) on delete set null,  -- created/extended membership (for revert)
-  checkin_id         uuid references checkin (id) on delete set null,     -- generating arrival (group Fitpass surcharge) or membership payment when app passes p_checkin_id
+  checkin_id         uuid references checkin (id) on delete set null,     -- group Fitpass surcharge and/or membership payment; set by RPC when app passes p_checkin_id, or by app auto-link (same member + business_date)
   kind               payment_kind not null default 'membership',
   amount_rsd         int not null check (amount_rsd >= 0),                 -- 0 allowed for non-group Fitpass check-in record
   is_custom_price    boolean not null default false,                      -- custom must be < standard and > 0
@@ -796,7 +797,7 @@ Atomically records cash payment(s). Returns the primary payment id (membership p
 | `p_amount_rsd` / `p_is_custom_price` / `p_custom_reason` | Membership amount; custom must be `0 < amount < offered` |
 | `p_start_mode` | `'payment'` or `'first_visit'` when no active membership; ignored for `zakazana` |
 | `p_settle_reserved_ids` | UUID[] of unsettled `reserved_session` rows to settle (one `debt_settlement` payment each) |
-| `p_checkin_id` | Written to `payment.checkin_id` on the **membership** payment (v1.17); not on `debt_settlement` (that link lives on `reserved_session`). Set when the entry point passes an arrival id (today: arrivals-row "Naplati"; search / member card / pre-check-in dialog pass `null`). Does not mutate the check-in; `void_checkin` never auto-voids a membership payment via this FK. |
+| `p_checkin_id` | Written to `payment.checkin_id` on the **membership** payment (v1.17); not on `debt_settlement` (that link lives on `reserved_session`). Supplied explicitly by the UI (arrivals-row "Naplati", check-in dialog after confirm) or **auto-resolved** by the app when `null` — latest same-day check-in for that member without a linked membership payment (`Tech.md` v1.18). Pay-first flow: app UPDATEs orphan payment after `create_checkin`. Does not mutate the check-in; `void_checkin` never auto-voids a membership payment via this FK. |
 | `p_business_date` | Defaults to `business_today()` |
 
 **Side effects**:

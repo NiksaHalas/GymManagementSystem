@@ -19,6 +19,7 @@ import {
   countOpenKeysToday,
 } from "@/lib/dashboard/queries";
 import { searchMembers } from "@/app/(app)/(shell)/clanovi/actions";
+import { linkOrphanPaymentToCheckin } from "@/lib/dashboard/payment-checkin-link";
 
 type ActionError = { ok: false; error: string };
 type ActionOk<T = undefined> = T extends undefined
@@ -119,11 +120,21 @@ export async function createMemberCheckin(
 
   if (error) return { ok: false, error: error.message };
 
+  const checkinId = data as string;
+  const today = businessToday();
+  await linkOrphanPaymentToCheckin(
+    supabase,
+    memberId,
+    checkinId,
+    today,
+    guard.staffId,
+  );
+
   const reserved =
     withTrainer && (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
 
   revalidateDashboard();
-  return { ok: true, id: data as string, reserved };
+  return { ok: true, id: checkinId, reserved };
 }
 
 export async function createFitpassCheckin(

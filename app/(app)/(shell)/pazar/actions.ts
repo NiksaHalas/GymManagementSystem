@@ -13,6 +13,7 @@ import {
 } from "@/lib/pazar/schema";
 import { fetchPaymentContext } from "@/lib/pazar/queries";
 import { fetchPaymentCatalog } from "@/lib/pazar/catalog";
+import { resolveCheckinIdForPayment } from "@/lib/dashboard/payment-checkin-link";
 
 type ActionError = { ok: false; error: string };
 type ActionOk<T = undefined> = T extends undefined
@@ -70,6 +71,13 @@ export async function recordPayment(
 
   const hadActive = ctx.hasActiveMembership;
   const supabase = await getClient();
+  const today = businessToday();
+  const resolvedCheckinId = await resolveCheckinIdForPayment(
+    supabase,
+    parsed.data.memberId,
+    parsed.data.checkinId,
+    today,
+  );
 
   const { data, error } = await supabase.rpc("record_payment", {
     p_member_id: parsed.data.memberId,
@@ -79,8 +87,8 @@ export async function recordPayment(
     p_custom_reason: parsed.data.customReason,
     p_start_mode: parsed.data.startMode,
     p_settle_reserved_ids: parsed.data.settleReservedIds,
-    p_checkin_id: parsed.data.checkinId,
-    p_business_date: businessToday(),
+    p_checkin_id: resolvedCheckinId,
+    p_business_date: today,
   });
 
   if (error) return { ok: false, error: error.message };

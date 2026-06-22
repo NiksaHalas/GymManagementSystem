@@ -1,7 +1,7 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.17
-Date: 2026-06-19
+Version: 1.18
+Date: 2026-06-22
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
@@ -23,6 +23,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.15 records **Payment ↔ Check-in veza — Etapa 1** (2026-06-19; migration `20260619140000_payment_checkin_link`): adds **`payment.checkin_id`** so a charge can be tied to the arrival that generated it (§2.3/§2.4). (1) **M1 fix** — `void_checkin` now reverses the group-Fitpass **+300 `fitpass_surcharge`** charge it could not previously reach, so voiding a group Fitpass arrival no longer leaves +300 in the day's takings (two-stage match: `payment.checkin_id` FK → exact-key fallback `business_date`+`staff_id`+`created_at` for legacy rows; only `kind='fitpass_surcharge'`, **never** a membership; an ambiguous fallback warns and skips, the check-in still voids). (2) **m2** — the dashboard surcharge badge renders **per check-in** (`fetchDayCheckins` adds a `checkin_id` lookup, with the same exact-key fallback, so the group-Fitpass row shows its +300). (3) `record_payment` accepts `p_checkin_id` on the **membership** payment. Type regen touches only `payment` Row/Insert/Update + the new FK ([[db-types-custom-aliases]] preserved). See `DB.md` v1.17 / PRD v1.12–v1.13.
 > v1.16 aligns **§9 / §2.3 / §2.4 / §12** with the codebase (2026-06-19): `PaymentDialog` already forwards `checkinId` when the entry point supplies it (arrivals-row "Naplati" → `payment.checkin_id`; search / member card / pre-check-in dialog pass `null`). Etapa 2 remainder: pay-after-check-in link from the check-in dialog. Repo: **35** migrations; `lib/offline/` not yet created; `scripts/verify_payment_checkin_link.sql` added. See `PRD.md` §9 / `DB.md` v1.17.
 > v1.17 records **Admin Smene history UI** (2026-06-19; **no schema change**, `supabase db push` no-op): `(app)/(shell)/smene` — weekly shift history for Admins (`requireAdmin()` in layout; remote Admin without counter cookie included). URL: canonical `?date=` (defaults to Belgrade today; week = Mon–Sun containing that date); optional `?staff=` worker filter persists across date changes. Data: `fetchShiftHistory()` in `lib/shifts/queries.ts` (interval-overlap query on `shift`, grouped by Belgrade calendar day of `started_at`; worker day summaries; `nextStartedAtSameDay`; coverage gaps vs `[09:00, close]` with 5 min threshold and today capped at `min(now, close)`). Helpers: `lib/shifts/format.ts`, `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`, `weekStartMonday`, `addDays`). UI: `date-nav.tsx` (±7 days), `worker-filter.tsx`, `smene-client.tsx` (table + mobile cards). Export: `GET /api/admin/smene/export?date=&staff=` → `smene-<weekStart>.csv`. RLS: `shift SELECT = is_admin()` — authenticated cookie client only, no service-role. See `DB.md` v1.18 / PRD v1.14.
+> v1.18 records **Payment ↔ Check-in link — Etapa 2 complete** (2026-06-22; **no schema change**): (1) **check-in dialog UI** — after successful `createMemberCheckin` the dialog stays open (multi check-in per day); `lastCheckinId` drives "Naplati članarinu"; opening payment closes the check-in dialog (`dashboard-counter.tsx`). (2) **App-layer auto-link** — `lib/dashboard/payment-checkin-link.ts`: **`linkOrphanPaymentToCheckin`** after `createMemberCheckin` (pay-first flow); **`resolveCheckinIdForPayment`** before `record_payment` (check-in-first flow when UI passes `null`). Scope: same `member_id` + `business_date`; explicit `checkinId` from arrivals row or post-confirm dialog wins; ~1:1 heuristic (latest orphan payment ↔ latest check-in without a linked membership payment). Guarded by `requireCounterToday()`; payment UPDATE allowed by RLS for today's rows. No partial unique index on membership↔checkin (unlike `fitpass_surcharge`). See `DB.md` v1.19 / PRD v1.15.
 
 ---
 
@@ -211,20 +212,23 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 - `fetchDayStats(businessDate, keyHolders?)` — counts for admin overview.
 
 **Mutations** (`dashboard/actions.ts`): all guarded by `requireCounterToday()` (counter device + today). Call Postgres RPCs for atomic side effects:
-- `createMemberCheckin` → `create_checkin`
+- `createMemberCheckin` → `create_checkin`; then **`linkOrphanPaymentToCheckin`** (Etapa 2, v1.18) when a same-day orphan membership payment exists
 - `createFitpassCheckin` → `create_checkin` (`is_fitpass`, optional `is_group_fitpass` — group inserts +300 RSD payment)
 - `markLeft` → `key_returned` update
 - `updateCheckinKey` → key reassignment on today's open check-in
 - `voidCheckin` → `void_checkin` (also reverses the linked group-Fitpass +300 `fitpass_surcharge`, v1.15)
 
-**Payment entry points** (shared `PaymentDialog` → `pazar/actions.recordPayment`; `PaymentDialog` accepts optional `checkinId` and passes it to `record_payment` as `p_checkin_id`):
+**Payment ↔ check-in linking** (`lib/dashboard/payment-checkin-link.ts`, v1.18): all counter paths converge on `payment.checkin_id` for same member + business day. Explicit `checkinId` from UI is used when supplied; otherwise **`resolveCheckinIdForPayment`** picks the latest check-in without a linked membership payment before `record_payment`, and **`linkOrphanPaymentToCheckin`** attaches the latest orphan membership payment after `createMemberCheckin`.
 
-| Entry point | `checkinId` passed | Notes |
+**Payment entry points** (shared `PaymentDialog` → `pazar/actions.recordPayment`; optional `checkinId` → `p_checkin_id`, auto-resolved when omitted):
+
+| Entry point | `checkinId` from UI | Effective link |
 |---|---|---|
-| `arrivals-table` — row "Naplati" | **yes** (`row.id`) | Membership payment linked to that arrival |
-| `checkin-search` — "Naplati" | `null` | Standalone payment before any check-in |
-| `checkin-dialog` — "Naplati članarinu" | `null` | Payment before check-in is recorded (Etapa 2 remainder: link after `create_checkin`) |
-| Member card — `MemberPayButton` | `null` | Standalone; counter + today guard still applies |
+| `arrivals-table` — row "Naplati" | **yes** (`row.id`) | Explicit |
+| `checkin-dialog` — "Naplati članarinu" after confirm | **yes** (`lastCheckinId`) | Explicit |
+| `checkin-dialog` — "Naplati članarinu" before confirm | `null` | Auto on next `createMemberCheckin` (pay-first) |
+| `checkin-search` — "Naplati" | `null` | Auto on next `createMemberCheckin`, or auto-resolved if check-in already exists |
+| Member card — `MemberPayButton` | `null` | Auto-resolved if same-day check-in exists; else orphan until check-in |
 
 **UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
 
@@ -239,7 +243,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - Fetches `fetchDayPayments`; Admin month/year via `fetchMonthTakings` / `fetchYearTakings`.
 
 **Mutations** (`pazar/actions.ts`):
-- `recordPayment` — `requireCounterToday()` → RPC `record_payment`; revalidates `/dashboard`, `/pazar`, member card. Passes `p_checkin_id` when `PaymentDialog` supplies `checkinId` (arrivals-row path today).
+- `recordPayment` — `requireCounterToday()` → **`resolveCheckinIdForPayment`** then RPC `record_payment`; revalidates `/dashboard`, `/pazar`, member card. Passes resolved `p_checkin_id` (explicit from UI or auto-matched orphan check-in).
 - `voidPayment` — `requireUser()` → RPC `void_payment` (RLS + RPC enforce same-day for workers).
 - `editPayment` — direct `payment` update (amount + custom reason; membership kind only).
 
@@ -367,7 +371,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Reserved (owed) session | **(implemented)** creation at check-in via RPC; display on member card; warn-after-3 on check-in dialog; settlement via `record_payment` (`debt_settlement` per row) from `PaymentDialog` |
 | Soon-to-expire (≤3 days) | **(implemented)** `fetchSoonToExpire` + header badge on dashboard |
 | Fitpass | **(implemented)** anonymous check-in + mandatory key via `fitpass-dialog`; group Fitpass inserts immediate +300 RSD `fitpass_surcharge` payment in `create_checkin` (linked via `payment.checkin_id`, v1.15); **void reverses the surcharge** so a cancelled group Fitpass arrival drops the +300 from takings, and the dashboard shows the surcharge badge per arrival |
-| Payments / custom price / discount | **(implemented)** shared `PaymentDialog`; RPC `record_payment` + `offered_membership_price`; custom price confirm; Otvoreni discount when `discount_flag`; entry from dashboard + member card; **`payment.checkin_id`** when paying from arrivals row |
+| Payments / custom price / discount | **(implemented)** shared `PaymentDialog`; RPC `record_payment` + `offered_membership_price`; custom price confirm; Otvoreni discount when `discount_flag`; entry from dashboard + member card; **`payment.checkin_id`** auto-link per member/day (`payment-checkin-link.ts`) |
 | Takings ("pazar") | **(implemented)** `(app)/pazar`: daily table + net total; Admin month/year tabs; RLS gates past-day edits for workers |
 | Payment void + membership revert | **(implemented)** RPC `void_payment`; UI on `/pazar` + member card (`payment-row-actions`); membership delete blocked if used |
 | Queued renewal (`zakazana`) | **(implemented)** payment while active creates `zakazana`; `promote_memberships()` pg_cron promotes oldest when prior membership ends |
@@ -484,6 +488,6 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 
 ## 12. Phased delivery (maps to SoW)
 - **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
-- **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, partial `payment.checkin_id` from arrivals row (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
-- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7); payment ↔ check-in Etapa 2 remainder (pay after `create_checkin` from check-in dialog). *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge void, payment void + membership revert, monthly/yearly takings + Admin export, shift runtime + reconcile + history UI, remote admin overview — **done**.)*
+- **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package + payment ↔ check-in Etapa 2 (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, membership `payment.checkin_id` auto-link (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
+- **Phase 2 — Advanced**: pause/resume; key-number search UI; non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7). *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge void, payment void + membership revert, monthly/yearly takings + Admin export, shift runtime + reconcile + history UI, remote admin overview, payment ↔ check-in link — **done**.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync (`lib/offline/`); automatic USB backup 3×/day (`scripts/backup-usb.mjs`).
