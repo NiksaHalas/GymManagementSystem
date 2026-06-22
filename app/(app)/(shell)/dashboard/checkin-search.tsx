@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/popover";
 import { searchMembersForCheckin } from "@/app/(app)/(shell)/dashboard/actions";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";
-import type { MemberSearchRow } from "@/lib/members/types";
+import type { CheckinSearchRow } from "@/lib/dashboard/types";
 import { CreateMemberDialog } from "@/app/(app)/(shell)/clanovi/create-member-dialog";
 
 interface CheckinSearchProps {
@@ -30,7 +30,7 @@ interface CheckinSearchProps {
 export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinSearchProps) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
-  const [rows, setRows] = React.useState<MemberSearchRow[]>([]);
+  const [rows, setRows] = React.useState<CheckinSearchRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [createOpen, setCreateOpen] = React.useState(false);
 
@@ -109,12 +109,19 @@ export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinS
                     }}
                   >
                     <div className="flex w-full items-center justify-between gap-2">
-                      <div className="flex flex-col">
+                      <div className="flex flex-col gap-0.5">
                         <span>{formatFullName(m.first_name, m.last_name)}</span>
                         <span className="text-muted-foreground text-xs">
                           {formatMemberNo(m.member_no)} · {m.phone}
                           {m.membership_label ? ` · ${m.membership_label}` : ""}
                         </span>
+                        {m.openVisit != null && (
+                          <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-400 w-fit">
+                            {m.openVisit.keyNo != null
+                              ? `U teretani — ključ ${m.openVisit.keyNo}`
+                              : "U teretani — bez ključa"}
+                          </span>
+                        )}
                       </div>
                       <Button
                         type="button"

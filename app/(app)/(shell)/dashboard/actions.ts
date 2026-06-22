@@ -12,9 +12,11 @@ import {
   memberCheckinSchema,
   updateCheckinKeySchema,
 } from "@/lib/dashboard/schema";
-import type { CheckinMemberContext } from "@/lib/dashboard/types";
+import type { CheckinMemberContext, CheckinSearchRow, LastKeyHolder } from "@/lib/dashboard/types";
 import {
   fetchCheckinMemberContext,
+  fetchLastKeyHolder,
+  fetchOpenVisitsForMembers,
   fetchTrainerCheckinCategories,
   countOpenKeysToday,
 } from "@/lib/dashboard/queries";
@@ -46,10 +48,39 @@ function revalidateDashboard() {
   revalidatePath("/dashboard");
 }
 
-export async function searchMembersForCheckin(q: string) {
+export async function searchMembersForCheckin(q: string): Promise<{
+  rows: CheckinSearchRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
   const guard = await requireCounterToday();
   if (!guard.ok) throw new Error(guard.error);
-  return searchMembers(q, { includeArchived: false, page: 0 });
+
+  const result = await searchMembers(q, { includeArchived: false, page: 0 });
+  const today = businessToday();
+  const rowIds = result.rows.map((r) => r.id);
+  const openMap = await fetchOpenVisitsForMembers(rowIds, today);
+
+  const rows: CheckinSearchRow[] = result.rows.map((row) => {
+    const keyNo = openMap.get(row.id);
+    return {
+      ...row,
+      openVisit: keyNo !== undefined ? { keyNo } : null,
+    };
+  });
+
+  return { ...result, rows };
+}
+
+export async function findLastKeyHolder(
+  keyNo: number,
+): Promise<LastKeyHolder | null> {
+  await requireUser();
+  if (!Number.isInteger(keyNo) || keyNo < 1 || keyNo > 22) {
+    throw new Error("Broj ključa mora biti između 1 i 22.");
+  }
+  return fetchLastKeyHolder(keyNo);
 }
 
 export async function getMemberCheckinContext(

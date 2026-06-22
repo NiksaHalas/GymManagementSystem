@@ -1,4 +1,5 @@
 import type { MemberStatusKind } from "@/lib/members/status";
+import type { MemberSearchRow } from "@/lib/members/types";
 
 export const KEY_COUNT = 22;
 
@@ -98,4 +99,21 @@ export interface CheckinMemberContext {
   /** Category of the member's most recent non-voided trainer check-in (passive
    * "last time" hint for the manual category selector); null if never. */
   lastTrainerCategoryId: number | null;
+  hasOpenVisit: boolean;
+  openVisitKeyNo: number | null;
+}
+
+export interface CheckinSearchRow extends MemberSearchRow {
+  openVisit: { keyNo: number | null } | null;
+}
+
+export interface LastKeyHolder {
+  keyNo: number;
+  memberId: string | null;
+  memberNo: number | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  isFitpass: boolean;
+  lastHeldAt: string;
 }

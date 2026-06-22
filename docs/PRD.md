@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.17
+Version: 1.18
 Date: 2026-06-22
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -19,6 +19,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.15 aligns **§9 Implementation status** with the codebase (2026-06-19): Phase 1c dashboard scope; **payment `checkin_id` Etapa 2 partial** — "Naplati" on an existing arrival row links the membership payment; search / member card / "Naplati članarinu" before check-in intentionally omit the link. Adds deferred items for session override after expiry (§3.4) and end-of-day unreturned-keys visibility (§3.7). See `Tech.md` v1.16 / `DB.md` v1.17.
 > v1.16 records **Pause / resume membership** (2026-06-22): RPCs `pause_membership` / `resume_membership`; member-card controls; dashboard amber „Pauzirana članarina" badge + check-in warning; `create_checkin` frozen branch (no side effects while paused). See `Tech.md` v1.19 / `DB.md` v1.20.
 > v1.17 records a **known gap — duplicate check-in while member still present** (§9.2): v1 allows it per §3.2/§8; guard deferred until pre-launch polish.
+> v1.18 records **open-visit guard (GYM05) + key-number search** (2026-06-22): `create_checkin` hard-blocks a second member check-in while an open visit exists today (`key_returned=false`, incl. „Bez ključa"); passive UI hints in search + check-in dialog; keys panel search returns last holder ever (incl. Fitpass). See `Tech.md` v1.21 / `DB.md` v1.21.
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -84,7 +85,7 @@ Notes:
 - If the membership is expired at check-in → a red **"istekla članarina"** marker next to the entry (check-in is still allowed).
 - If the member pays that day → the entry shows **which membership was paid and how much**.
 - **Member search** at check-in: by first name, last name, and member number.
-- **Multiple arrivals of the same member** in one day are allowed (each is a separate record).
+- **Multiple arrivals of the same member** in one day are allowed **after „Otišao"** (each is a separate record). A **second check-in while the member is still present** (open visit: non-voided today row with `key_returned=false`, including „Bez ključa") is **blocked** by the server (`GYM05`); the UI shows a passive hint but staff must record **„Otišao"** first.
 - If the member has a trainer-based membership, the worker may **tick the training type**: "vođeni" (guided/group), "individualni", or "duo":
   - If a trainer-based type is ticked → arrival recorded, **1 session deducted**, the session date is **written to the member's card**, and a **trainer is selected** (from the worker accounts list).
   - If not ticked (member trains alone) → arrival recorded, **no session deducted** (members with a session package or time-based membership may train alone).
@@ -159,7 +160,7 @@ Rules:
 - The **"otišao"** button releases a key for reassignment.
 - At end of day, any key not released → a sign that someone took it home.
 - **Shared keys are allowed**: two people may share one key. The system **tracks only the latest assignment** for a key.
-- **Key search**: enter a key number → the system shows the **last member who had that key** (so the gym knows whom to contact).
+- **Key search**: enter a key number → the system shows the **last member who had that key** (so the gym knows whom to contact). **Implemented** in the keys panel (`keys-panel.tsx`): number input + „Nađi" returns the last non-voided holder ever (member card link, or „Fitpass / nema kontakta").
 - If **all 22 keys are taken**, a member may still be **checked in without a key** (optional), with a warning.
 
 ### 3.8 Fitpass
@@ -334,7 +335,7 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Auth & shell** | Login, password reset (recovery email → link → set new password), accounts (incl. last-active-admin guard), counter-device cookie + `/samo-salter` access gate, shift lifecycle (auto-open, handover, manual end, logout open-shift prompt, auto-close safety net), sidebar nav |
 | **Members ("Članovi")** | List + fuzzy search (ime, prezime, broj člana), create/edit, virtual card, archive/restore, discount toggle, comment |
 | **Prices ("Cene")** | Tabbed catalog by training category, inline Admin price edit, add/deactivate types |
-| **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (closes after successful confirm; key, trainer session, comment popup on open); Fitpass entry; keys panel + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days, excludes already-expired); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner. **Phase 1c (2026-06-19):** trainer session without an active trainer-based package (worker picks category; `rezervisano` debt at captured daily price; sessions never transfer across categories); S3 confirm when member has active non-trainer package |
+| **Dashboard v1** | Day view + date navigation; member search (ime, prezime, broj člana); check-in dialog (closes after successful confirm; key, trainer session, comment popup on open); **open-visit guard** (GYM05 + UI hints); Fitpass entry; keys panel + key-number search + "otišao"; void today's check-in / change key; read-only payment badge on rows; expired-membership marker; soon-to-expire header badge (≤3 days, excludes already-expired); quick-create member from search; remote Admin overview (stats + list); non-counter read-only banner. **Phase 1c (2026-06-19):** trainer session without an active trainer-based package (worker picks category; `rezervisano` debt at captured daily price; sessions never transfer across categories); S3 confirm when member has active non-trainer package |
 | **Pazar ("Dnevne uplate")** | `/pazar`: daily payments table + net total + date nav; storno (mandatory reason) + edit amount/reason; shared `PaymentDialog` from dashboard search, arrivals row, check-in dialog, member card; membership payment (category → package → auto price, custom discount confirm, `start_mode`); debt settlement (per owed session); queued **`zakazana`** renewal when member already active; Admin month/year breakdown + CSV export |
 | **Payments on dashboard** | Membership payment ↔ same-day arrival auto-linked per member (`payment.checkin_id`) in either order; explicit link from arrivals-row **Naplati**; auto-link when UI passes `null` (search, check-in dialog pay-before-confirm, member card); counter + today guard on `recordPayment` |
 | **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total); **voiding the arrival reverses the +300** and the charge shows as a per-arrival badge (Etapa 1, v1.12) |
@@ -345,11 +346,9 @@ This section tracks delivery against the requirements above. Technical detail li
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
 - **Auto session deduction** for non-trainer Open packages (8/1, 12/1) on solo arrival — trainer-tick path only in v1.
-- **Key-number search UI** — enter key → show last holder (occupancy panel shows today's holders only; click shows holder).
 - **Offline / PWA** — check-in and payment queue when internet is down (Phase 3).
 - **Session override after expiry** — worker confirmation to use remaining sessions on an expired package (§3.4); accepted edge today: `aktivna` + past `end_date` still deducts until `promote_memberships()` flips status.
 - **End-of-day unreturned keys** — sign/report for keys not released via "otišao" (§3.7); open keys are visible in the keys panel for the selected day only.
-- **Duplicate check-in while member still present (to fix before launch polish)** — v1 intentionally allows **multiple same-day arrivals** per member (§3.2, §8). There is **no block** when the member already has a non-voided today row with the key still open (`key_returned = false` — i.e. still "in gym" until **Otišao**). Counter staff can search and check in the same member again, creating duplicate rows. **Fix when finishing the app:** add a guard (preferably in `create_checkin` + UI hint) to reject or confirm re-check-in while an open visit exists; still allow a **new** check-in after **Otišao** (return visit same day). **Open product decisions:** does „Bez ključa" count as an open visit? second trainer session same day after leaving?
 
 ### 9.3 Not started (post-MVP / Phase 2–3)
 - **USB backup** companion script (scheduled 3×/day) — Phase 3.

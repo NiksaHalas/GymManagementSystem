@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.20
+Version: 1.21
 Date: 2026-06-22
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -25,6 +25,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.18 — **no schema change.** Records **Admin Smene history UI** (2026-06-19): `(app)/(shell)/smene` replaces the Phase 2 stub with a weekly shift-history view (Mon–Sun via `?date=`, optional `?staff=` filter, coverage-gap warnings vs gym hours 09:00–close, CSV export `GET /api/admin/smene/export`). Reads existing `shift` rows only — **`shift SELECT = is_admin()`** (§5.1); no new tables, RPCs, or migrations. App queries via `lib/shifts/queries.ts` (`fetchShiftHistory`, interval-overlap on `started_at`/`ended_at`); Belgrade day boundaries via `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`). Deployed with app code; `supabase db push` was a **no-op** (ledger still **35/35** 1:1). See `Tech.md` v1.17 / PRD v1.14.
 > v1.19 — **no schema change.** Records **Payment ↔ Check-in Etapa 2 complete** (2026-06-22): app layer (`lib/dashboard/payment-checkin-link.ts`) auto-writes `payment.checkin_id` on membership payments for the same member + `business_date` when UI passes `null` — pay-first (`linkOrphanPaymentToCheckin` after `create_checkin`) or check-in-first (`resolveCheckinIdForPayment` before `record_payment`). Explicit `p_checkin_id` from UI unchanged. No new partial unique index on membership↔checkin (only `fitpass_surcharge` has one). `void_checkin` still never auto-voids membership payments. See `Tech.md` v1.18 / PRD v1.15.
 > v1.20 — **Pause / resume membership** (2026-06-22). Migration `20260622120000_pause_resume_membership`: adds RPCs **`pause_membership`** / **`resume_membership`** (§11.4, SQLSTATE **`GYM03`** / **`GYM04`**); **`create_checkin`** paused branch — arrival recorded, `checkin.membership_id = NULL`, no session deduction / `reserved_session` / first-visit activation while `status='pauzirana'` (§10.2). Verification script: `scripts/verify_pause_resume.sql`. Repo: **36** migration files. See `Tech.md` v1.19 / PRD v1.16.
+> v1.21 — **Open-visit guard (GYM05) + key search queries** (2026-06-22). Migration `20260622130000_open_visit_guard` (`create or replace` on `create_checkin`; **signature unchanged**, no type regen): blocks a second **member** check-in on the same `business_date` while a non-voided open visit exists (`key_returned=false`, incl. `key_no IS NULL`); Fitpass bypasses the guard; paused members subject to guard. Custom SQLSTATE **`GYM05`** (readable Serbian, incl. key no or „bez ključa"). App: `fetchOpenVisitsForMembers`, `fetchLastKeyHolder`, UI hints + keys-panel search. Verification: `scripts/verify_open_visit_guard.sql`. Repo: **37** migration files. See `Tech.md` v1.21 / PRD v1.18.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -416,7 +417,7 @@ create index checkin_open_key_idx      on checkin (key_no, created_at desc) wher
 - **End of day**: keys still open at midnight are surfaced in a next-day report (they stay `key_returned=false`).
 - **Duo**: two independent check-ins (no linkage). **Guided/group**: one check-in per participant; same `trainer_id`.
 - **Void**: `void_checkin(uuid)` RPC (security definer) sets `voided=true`, restores decremented sessions, deletes linked `session_log` / unsettled `reserved_session`, and may revert `first_visit` membership activation. Workers: same business day only; admins: any day.
-- **Create**: `create_checkin(...)` RPC atomically inserts the row, handles trainer session deduction / reserved debt, and activates `first_visit` memberships on first check-in.
+- **Create**: `create_checkin(...)` RPC atomically inserts the row, handles trainer session deduction / reserved debt, activates `first_visit` memberships on first check-in, and enforces the **open-visit guard** (GYM05) for member check-ins.
 
 ### 3.10 `session_log`
 History of consumed trainer sessions (dates on the card).
@@ -767,7 +768,9 @@ Atomically inserts a `checkin` row and applies side effects:
 - **No active trainer-based membership of that category** (no package, or a non-trainer/expired package — PRD §3.5 "or no active package") → insert `reserved_session` with the chosen category; `checkin.membership_id = null`. Sessions never transfer between categories.
 - `start_mode = 'first_visit'` + first check-in → set `start_date` / `end_date` on the member's active membership (independent of whether the arrival is a trainer session).
 - Group Fitpass (`p_is_fitpass and p_is_group_fitpass`) → insert `payment` (+300 RSD, `member_id` null).
-- Validates: active member, valid key, active trainer, category is trainer-based. Missing daily price → SQLSTATE **`GYM01`**; category ≠ an active trainer-based membership's category → SQLSTATE **`GYM02`** (defense-in-depth; UI fixes the category in that case).
+- Validates: active member, valid key, active trainer, category is trainer-based. Missing daily price → SQLSTATE **`GYM01`**; category ≠ an active trainer-based membership's category → SQLSTATE **`GYM02`** (defense-in-depth; UI fixes the category in that case). **Open visit** (member only, same `business_date`, non-voided, `key_returned=false`, incl. `key_no IS NULL`) → SQLSTATE **`GYM05`**; new check-in allowed after **„Otišao"** (`key_returned=true`). Fitpass never triggers GYM05.
+
+**Custom SQLSTATEs on `create_checkin`:** **`GYM01`** (missing daily price), **`GYM02`** (category mismatch), **`GYM05`** (duplicate open visit). Related: **`GYM03`** / **`GYM04`** on pause/resume RPCs (§11.4).
 
 ### 10.3 `void_checkin(p_checkin_id uuid) → void`
 Soft-voids a check-in (`voided = true`, audit columns). **Workers**: same business day only; **admins**: any day (via `is_admin()`).

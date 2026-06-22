@@ -10,6 +10,7 @@ import type {
   DashboardCheckinRow,
   DayStats,
   KeyHolder,
+  LastKeyHolder,
   SoonExpireMember,
   StaffOption,
   TrainerCheckinCategory,
@@ -545,6 +546,17 @@ export async function fetchCheckinMemberContext(
 
   const status = getMemberStatus(summary, today);
 
+  const { data: openVisit } = await supabase
+    .from("checkin")
+    .select("key_no")
+    .eq("member_id", memberId)
+    .eq("business_date", today)
+    .eq("voided", false)
+    .eq("key_returned", false)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   return {
     memberId: member.id,
     memberNo: member.member_no,
@@ -564,6 +576,73 @@ export async function fetchCheckinMemberContext(
     membershipStatusLabel: status.label,
     unsettledReservedCount: unsettledCount ?? 0,
     lastTrainerCategoryId: lastTrainer?.training_category_id ?? null,
+    hasOpenVisit: openVisit != null,
+    openVisitKeyNo: openVisit?.key_no ?? null,
+  };
+}
+
+export async function fetchOpenVisitsForMembers(
+  memberIds: string[],
+  businessDate: string,
+): Promise<Map<string, number | null>> {
+  if (memberIds.length === 0) return new Map();
+
+  const supabase = await getClient();
+  const { data, error } = await supabase
+    .from("checkin")
+    .select("member_id, key_no, created_at")
+    .in("member_id", memberIds)
+    .eq("business_date", businessDate)
+    .eq("voided", false)
+    .eq("key_returned", false)
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  const map = new Map<string, number | null>();
+  for (const r of data ?? []) {
+    if (r.member_id && !map.has(r.member_id)) {
+      map.set(r.member_id, r.key_no);
+    }
+  }
+  return map;
+}
+
+export async function fetchLastKeyHolder(
+  keyNo: number,
+): Promise<LastKeyHolder | null> {
+  const supabase = await getClient();
+
+  const { data, error } = await supabase
+    .from("checkin")
+    .select(
+      "id, key_no, created_at, is_fitpass, member_id, member(member_no, first_name, last_name, phone)",
+    )
+    .eq("key_no", keyNo)
+    .eq("voided", false)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+
+  const member = unwrapJoin(data.member) as {
+    member_no: number | null;
+    first_name: string;
+    last_name: string;
+    phone: string;
+  } | null;
+
+  return {
+    keyNo: data.key_no as number,
+    memberId: data.member_id,
+    memberNo: member?.member_no ?? null,
+    firstName: member?.first_name ?? null,
+    lastName: member?.last_name ?? null,
+    phone: member?.phone ?? null,
+    isFitpass: data.is_fitpass,
+    lastHeldAt: data.created_at,
   };
 }
 

@@ -262,6 +262,16 @@ function CheckinDialogForm({
             )}
           </div>
 
+          {ctx.hasOpenVisit && (
+            <p className="text-amber-600 dark:text-amber-400 text-xs">
+              Član je već prijavljen i još nije otišao (
+              {ctx.openVisitKeyNo != null
+                ? `ključ ${ctx.openVisitKeyNo}`
+                : "bez ključa"}
+              ). Ako je nova poseta, prvo evidentirajte „Otišao“.
+            </p>
+          )}
+
           <div>
             <Label className="mb-2 block text-sm">Ključ</Label>
             <div className="grid grid-cols-6 gap-1.5">

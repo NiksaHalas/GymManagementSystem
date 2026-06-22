@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.20
+Version: 1.21
 Date: 2026-06-22
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -26,6 +26,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.18 records **Payment ↔ Check-in link — Etapa 2 complete** (2026-06-22; **no schema change**): (1) **check-in dialog UI** — after successful `createMemberCheckin` the dialog stays open (multi check-in per day); `lastCheckinId` drives "Naplati članarinu"; opening payment closes the check-in dialog (`dashboard-counter.tsx`). (2) **App-layer auto-link** — `lib/dashboard/payment-checkin-link.ts`: **`linkOrphanPaymentToCheckin`** after `createMemberCheckin` (pay-first flow); **`resolveCheckinIdForPayment`** before `record_payment` (check-in-first flow when UI passes `null`). Scope: same `member_id` + `business_date`; explicit `checkinId` from arrivals row or post-confirm dialog wins; ~1:1 heuristic (latest orphan payment ↔ latest check-in without a linked membership payment). Guarded by `requireCounterToday()`; payment UPDATE allowed by RLS for today's rows. No partial unique index on membership↔checkin (unlike `fitpass_surcharge`). See `DB.md` v1.19 / PRD v1.15.
 > v1.19 records **Pause / resume membership** (2026-06-22; migration `20260622120000_pause_resume_membership`): RPCs `pause_membership` / `resume_membership` (`DB.md` §11.4); member-card `MembershipPauseControls`; dashboard member-level paused lookup in `fetchDayCheckins` (amber „Pauzirana članarina" badge — current state, not historical per arrival); check-in dialog paused warning + suppressed reserved/debt UX; `create_checkin` paused branch in `DB.md` §10.2. Verification: `scripts/verify_pause_resume.sql`. See `DB.md` v1.20 / PRD v1.16.
 > v1.20 records **check-in dialog UX fix + deferred duplicate guard** (2026-06-22; **no schema change**): `checkin-dialog.tsx` now **closes after every successful** `createMemberCheckin` (supersedes v1.18 stay-open / `lastCheckinId` post-confirm pay path — pay-after-check-in is via arrivals-row **Naplati** only). PRD §9.2 adds **duplicate check-in while member still present** as pre-launch polish. See `PRD.md` v1.17.
+> v1.21 records **open-visit guard (GYM05) + key-number search** (2026-06-22; migration `20260622130000_open_visit_guard`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): (1) **GYM05** — server hard-block when member has open visit today; passive amber hints in `checkin-search.tsx` (badge per row) and `checkin-dialog.tsx` (`hasOpenVisit` / `openVisitKeyNo` from `fetchCheckinMemberContext`); confirm button stays enabled (toast on submit). (2) **Key search** — `keys-panel.tsx` input + `findLastKeyHolder` (`requireUser()`, not counter-only); `fetchLastKeyHolder` / `fetchOpenVisitsForMembers` in `lib/dashboard/queries.ts`. Verification: `scripts/verify_open_visit_guard.sql`. See `DB.md` v1.21 / PRD v1.18.
 
 ---
 
@@ -210,15 +211,20 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 **Data** (`lib/dashboard/queries.ts`):
 - `fetchDayCheckins(businessDate)` — arrivals for the day (excludes voided), enriches with member + membership status + read-only payment badge for today. The group-Fitpass **+300 surcharge badge** is resolved **per check-in** (v1.15): a `fitpass_surcharge` lookup keyed on `payment.checkin_id`, with an exact-key fallback (`staff_id`+`created_at`) for legacy rows, so the anonymous group-Fitpass row (`member_id` null) shows its charge. **Paused marker** (v1.19): a member-level lookup (`membership.status='pauzirana'`) sets `membershipPaused` on each row — current state for today's counter view (not historical per arrival).
 - `fetchKeyOccupancy(businessDate)` — open keys (`not key_returned`, `not voided`) with last holder.
+- `fetchOpenVisitsForMembers(memberIds, businessDate)` — batch open-visit lookup for search badges (v1.21).
+- `fetchLastKeyHolder(keyNo)` — last non-voided holder of a key ever (v1.21; incl. Fitpass).
+- `fetchCheckinMemberContext(memberId)` — member + membership + open-visit hint (`hasOpenVisit`, `openVisitKeyNo`, v1.21).
 - `fetchSoonToExpire()` — memberships ending within 3 days.
 - `fetchDayStats(businessDate, keyHolders?)` — counts for admin overview.
 
-**Mutations** (`dashboard/actions.ts`): all guarded by `requireCounterToday()` (counter device + today). Call Postgres RPCs for atomic side effects:
+**Mutations** (`dashboard/actions.ts`): counter mutations guarded by `requireCounterToday()` (counter device + today). Call Postgres RPCs for atomic side effects:
 - `createMemberCheckin` → `create_checkin`; then **`linkOrphanPaymentToCheckin`** (Etapa 2, v1.18) when a same-day orphan membership payment exists
 - `createFitpassCheckin` → `create_checkin` (`is_fitpass`, optional `is_group_fitpass` — group inserts +300 RSD payment)
 - `markLeft` → `key_returned` update
 - `updateCheckinKey` → key reassignment on today's open check-in
 - `voidCheckin` → `void_checkin` (also reverses the linked group-Fitpass +300 `fitpass_surcharge`, v1.15)
+
+**Read actions** (v1.21): `searchMembersForCheckin` (counter-only) enriches member search with open-visit badges; `findLastKeyHolder(keyNo)` for keys-panel history search (`requireUser()` — remote Admin + off-counter read-only).
 
 **Payment ↔ check-in linking** (`lib/dashboard/payment-checkin-link.ts`, v1.18): all counter paths converge on `payment.checkin_id` for same member + business day. Explicit `checkinId` from UI is used when supplied; otherwise **`resolveCheckinIdForPayment`** picks the latest check-in without a linked membership payment before `record_payment`, and **`linkOrphanPaymentToCheckin`** attaches the latest orphan membership payment after `createMemberCheckin`.
 
@@ -231,9 +237,9 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 | `checkin-search` — "Naplati" | `null` | Auto on next `createMemberCheckin`, or auto-resolved if check-in already exists |
 | Member card — `MemberPayButton` | `null` | Auto-resolved if same-day check-in exists; else orphan until check-in |
 
-**UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; paused warning; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
+**UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel` (today occupancy + key-number history search, v1.21), `date-nav`, `soon-expire-badge`.
 
-**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI, **duplicate check-in guard while member still present** (§9.2).
+**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, end-of-day unreturned-keys report.
 
 ### 2.4 Pazar (daily takings & cash payment)
 Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
@@ -366,7 +372,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 |---|---|
 | Members list + search + virtual card | **(implemented)** `(app)/clanovi`: paginated/fuzzy search via `search_members` (`DB.md` §9), create/edit (`23505` → friendly phone message in `clanovi/actions.ts`), virtual card with **"Istekla"** + **"Istorija članarina"**, payment/session/reserved-session history, discount toggle, archive/restore (restore Admin-only, DB-enforced — `DB.md` §3.3; custom price per payment in history only — PRD §3.3). Status via `lib/members/status.ts`; audit columns in server actions |
 | Daily check-in dashboard | **(implemented v1)** `(app)/dashboard`: see §2.3. Counter + today = full ops; remote Admin = overview; workers off-counter = read-only. Postgres RPCs `create_checkin` / `void_checkin` (`DB.md` §10). Refresh via `router.refresh()` after mutations. |
-| Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows holder. **Key-number search UI** not yet built. |
+| Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows today's holder; **key-number search** (last holder ever) via `findLastKeyHolder` + input in `keys-panel` (v1.21). |
 | Membership status badges | **(implemented)** on dashboard rows via member status; red "istekla članarina" marker; amber **"Pauzirana članarina"** for currently paused members (v1.19) |
 | Pause / resume membership | **(implemented)** member card `MembershipPauseControls` → RPCs `pause_membership` / `resume_membership`; extends `end_date` by exact paused days; check-in while paused frozen (`DB.md` §10.2) |
 | Trainer session + session deduction | **(implemented)** check-in dialog + `create_checkin` RPC: optional trainer tick, decrement, `session_log`, reserved session at 0 sessions. **Non-trainer** Open 8/1 & 12/1 auto-deduct **deferred**. |
