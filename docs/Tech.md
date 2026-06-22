@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.19
+Version: 1.20
 Date: 2026-06-22
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -25,6 +25,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.17 records **Admin Smene history UI** (2026-06-19; **no schema change**, `supabase db push` no-op): `(app)/(shell)/smene` — weekly shift history for Admins (`requireAdmin()` in layout; remote Admin without counter cookie included). URL: canonical `?date=` (defaults to Belgrade today; week = Mon–Sun containing that date); optional `?staff=` worker filter persists across date changes. Data: `fetchShiftHistory()` in `lib/shifts/queries.ts` (interval-overlap query on `shift`, grouped by Belgrade calendar day of `started_at`; worker day summaries; `nextStartedAtSameDay`; coverage gaps vs `[09:00, close]` with 5 min threshold and today capped at `min(now, close)`). Helpers: `lib/shifts/format.ts`, `lib/time/business-day.ts` (`belgradeDayOf`, `belgradeInstant`, `weekStartMonday`, `addDays`). UI: `date-nav.tsx` (±7 days), `worker-filter.tsx`, `smene-client.tsx` (table + mobile cards). Export: `GET /api/admin/smene/export?date=&staff=` → `smene-<weekStart>.csv`. RLS: `shift SELECT = is_admin()` — authenticated cookie client only, no service-role. See `DB.md` v1.18 / PRD v1.14.
 > v1.18 records **Payment ↔ Check-in link — Etapa 2 complete** (2026-06-22; **no schema change**): (1) **check-in dialog UI** — after successful `createMemberCheckin` the dialog stays open (multi check-in per day); `lastCheckinId` drives "Naplati članarinu"; opening payment closes the check-in dialog (`dashboard-counter.tsx`). (2) **App-layer auto-link** — `lib/dashboard/payment-checkin-link.ts`: **`linkOrphanPaymentToCheckin`** after `createMemberCheckin` (pay-first flow); **`resolveCheckinIdForPayment`** before `record_payment` (check-in-first flow when UI passes `null`). Scope: same `member_id` + `business_date`; explicit `checkinId` from arrivals row or post-confirm dialog wins; ~1:1 heuristic (latest orphan payment ↔ latest check-in without a linked membership payment). Guarded by `requireCounterToday()`; payment UPDATE allowed by RLS for today's rows. No partial unique index on membership↔checkin (unlike `fitpass_surcharge`). See `DB.md` v1.19 / PRD v1.15.
 > v1.19 records **Pause / resume membership** (2026-06-22; migration `20260622120000_pause_resume_membership`): RPCs `pause_membership` / `resume_membership` (`DB.md` §11.4); member-card `MembershipPauseControls`; dashboard member-level paused lookup in `fetchDayCheckins` (amber „Pauzirana članarina" badge — current state, not historical per arrival); check-in dialog paused warning + suppressed reserved/debt UX; `create_checkin` paused branch in `DB.md` §10.2. Verification: `scripts/verify_pause_resume.sql`. See `DB.md` v1.20 / PRD v1.16.
+> v1.20 records **check-in dialog UX fix + deferred duplicate guard** (2026-06-22; **no schema change**): `checkin-dialog.tsx` now **closes after every successful** `createMemberCheckin` (supersedes v1.18 stay-open / `lastCheckinId` post-confirm pay path — pay-after-check-in is via arrivals-row **Naplati** only). PRD §9.2 adds **duplicate check-in while member still present** as pre-launch polish. See `PRD.md` v1.17.
 
 ---
 
@@ -226,14 +227,13 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 | Entry point | `checkinId` from UI | Effective link |
 |---|---|---|
 | `arrivals-table` — row "Naplati" | **yes** (`row.id`) | Explicit |
-| `checkin-dialog` — "Naplati članarinu" after confirm | **yes** (`lastCheckinId`) | Explicit |
-| `checkin-dialog` — "Naplati članarinu" before confirm | `null` | Auto on next `createMemberCheckin` (pay-first) |
+| `checkin-dialog` — "Naplati članarinu" | `null` | Auto-resolved if same-day check-in exists; pay-first via search path |
 | `checkin-search` — "Naplati" | `null` | Auto on next `createMemberCheckin`, or auto-resolved if check-in already exists |
 | Member card — `MemberPayButton` | `null` | Auto-resolved if same-day check-in exists; else orphan until check-in |
 
-**UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
+**UI pieces**: `checkin-search` (shadcn `command`/`popover`, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; paused warning; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel`, `date-nav`, `soon-expire-badge`.
 
-**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI.
+**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, dedicated key-number search UI, **duplicate check-in guard while member still present** (§9.2).
 
 ### 2.4 Pazar (daily takings & cash payment)
 Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
