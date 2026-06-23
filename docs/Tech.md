@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.21
+Version: 1.22
 Date: 2026-06-22
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -27,6 +27,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.19 records **Pause / resume membership** (2026-06-22; migration `20260622120000_pause_resume_membership`): RPCs `pause_membership` / `resume_membership` (`DB.md` §11.4); member-card `MembershipPauseControls`; dashboard member-level paused lookup in `fetchDayCheckins` (amber „Pauzirana članarina" badge — current state, not historical per arrival); check-in dialog paused warning + suppressed reserved/debt UX; `create_checkin` paused branch in `DB.md` §10.2. Verification: `scripts/verify_pause_resume.sql`. See `DB.md` v1.20 / PRD v1.16.
 > v1.20 records **check-in dialog UX fix + deferred duplicate guard** (2026-06-22; **no schema change**): `checkin-dialog.tsx` now **closes after every successful** `createMemberCheckin` (supersedes v1.18 stay-open / `lastCheckinId` post-confirm pay path — pay-after-check-in is via arrivals-row **Naplati** only). PRD §9.2 adds **duplicate check-in while member still present** as pre-launch polish. See `PRD.md` v1.17.
 > v1.21 records **open-visit guard (GYM05) + key-number search** (2026-06-22; migration `20260622130000_open_visit_guard`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): (1) **GYM05** — server hard-block when member has open visit today; passive amber hints in `checkin-search.tsx` (badge per row) and `checkin-dialog.tsx` (`hasOpenVisit` / `openVisitKeyNo` from `fetchCheckinMemberContext`); confirm button stays enabled (toast on submit). (2) **Key search** — `keys-panel.tsx` input + `findLastKeyHolder` (`requireUser()`, not counter-only); `fetchLastKeyHolder` / `fetchOpenVisitsForMembers` in `lib/dashboard/queries.ts`. Verification: `scripts/verify_open_visit_guard.sql`. See `DB.md` v1.21 / PRD v1.18.
+> v1.22 records **solo Otvoreni auto session deduction** (2026-06-22; migration `20260622140000_open_solo_session_deduct`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): solo arrival on active session-based Otvoreni (`training_category.code='otvoreni'`, `is_time_based=false`) decrements `sessions_left` without trainer tick or `session_log`; 0 sessions → check-in without deduction; `createMemberCheckin` refetches context post-RPC for toast state; `checkin-dialog.tsx` passive hints + last-session toast. Verification: `scripts/verify_open_solo_session.sql`. See `DB.md` v1.22 / PRD v1.19.
 
 ---
 
@@ -213,7 +214,7 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 - `fetchKeyOccupancy(businessDate)` — open keys (`not key_returned`, `not voided`) with last holder.
 - `fetchOpenVisitsForMembers(memberIds, businessDate)` — batch open-visit lookup for search badges (v1.21).
 - `fetchLastKeyHolder(keyNo)` — last non-voided holder of a key ever (v1.21; incl. Fitpass).
-- `fetchCheckinMemberContext(memberId)` — member + membership + open-visit hint (`hasOpenVisit`, `openVisitKeyNo`, v1.21).
+- `fetchCheckinMemberContext(memberId)` — member + membership + open-visit hint (`hasOpenVisit`, `openVisitKeyNo`, v1.21) + `isSessionBasedOpen` (v1.22).
 - `fetchSoonToExpire()` — memberships ending within 3 days.
 - `fetchDayStats(businessDate, keyHolders?)` — counts for admin overview.
 
@@ -239,7 +240,7 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 
 **UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel` (today occupancy + key-number history search, v1.21), `date-nav`, `soon-expire-badge`.
 
-**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, auto session deduction for non-trainer Open 8/1 & 12/1 packages, end-of-day unreturned-keys report.
+**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, end-of-day unreturned-keys report.
 
 ### 2.4 Pazar (daily takings & cash payment)
 Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
@@ -375,7 +376,7 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Key occupancy (22) | **(implemented)** `fetchKeyOccupancy` + sidebar `keys-panel`; "otišao" via `markLeft`; click occupied key shows today's holder; **key-number search** (last holder ever) via `findLastKeyHolder` + input in `keys-panel` (v1.21). |
 | Membership status badges | **(implemented)** on dashboard rows via member status; red "istekla članarina" marker; amber **"Pauzirana članarina"** for currently paused members (v1.19) |
 | Pause / resume membership | **(implemented)** member card `MembershipPauseControls` → RPCs `pause_membership` / `resume_membership`; extends `end_date` by exact paused days; check-in while paused frozen (`DB.md` §10.2) |
-| Trainer session + session deduction | **(implemented)** check-in dialog + `create_checkin` RPC: optional trainer tick, decrement, `session_log`, reserved session at 0 sessions. **Non-trainer** Open 8/1 & 12/1 auto-deduct **deferred**. |
+| Trainer session + session deduction | **(implemented)** check-in dialog + `create_checkin` RPC: optional trainer tick, decrement, `session_log`, reserved session at 0 sessions. **Solo Otvoreni** session-based packages auto-deduct on solo arrival (v1.22). |
 | Reserved (owed) session | **(implemented)** creation at check-in via RPC; display on member card; warn-after-3 on check-in dialog; settlement via `record_payment` (`debt_settlement` per row) from `PaymentDialog` |
 | Soon-to-expire (≤3 days) | **(implemented)** `fetchSoonToExpire` + header badge on dashboard |
 | Fitpass | **(implemented)** anonymous check-in + mandatory key via `fitpass-dialog`; group Fitpass inserts immediate +300 RSD `fitpass_surcharge` payment in `create_checkin` (linked via `payment.checkin_id`, v1.15); **void reverses the surcharge** so a cancelled group Fitpass arrival drops the +300 from takings, and the dashboard shows the surcharge badge per arrival |

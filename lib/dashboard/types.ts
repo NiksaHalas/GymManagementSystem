@@ -93,6 +93,7 @@ export interface CheckinMemberContext {
   trainingCategoryLabel: string | null;
   sessionsLeft: number | null;
   isTimeBased: boolean | null;
+  isSessionBasedOpen: boolean;
   membershipStatus: MemberStatusKind;
   membershipStatusLabel: string;
   unsettledReservedCount: number;

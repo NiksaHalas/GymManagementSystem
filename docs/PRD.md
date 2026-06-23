@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.18
+Version: 1.19
 Date: 2026-06-22
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -20,6 +20,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.16 records **Pause / resume membership** (2026-06-22): RPCs `pause_membership` / `resume_membership`; member-card controls; dashboard amber „Pauzirana članarina" badge + check-in warning; `create_checkin` frozen branch (no side effects while paused). See `Tech.md` v1.19 / `DB.md` v1.20.
 > v1.17 records a **known gap — duplicate check-in while member still present** (§9.2): v1 allows it per §3.2/§8; guard deferred until pre-launch polish.
 > v1.18 records **open-visit guard (GYM05) + key-number search** (2026-06-22): `create_checkin` hard-blocks a second member check-in while an open visit exists today (`key_returned=false`, incl. „Bez ključa"); passive UI hints in search + check-in dialog; keys panel search returns last holder ever (incl. Fitpass). See `Tech.md` v1.21 / `DB.md` v1.21.
+> v1.19 records **solo auto session deduction for session-based Otvoreni packages** (2026-06-22): solo arrival on active Otvoreni 8/1, 12/1, or 1/1 decrements `sessions_left` without trainer tick; 0 sessions allows check-in without deduction; passive UI hints + last-session toast; time-based Otvoreni 30/1 and Kardio unchanged. See `Tech.md` v1.22 / `DB.md` v1.22.
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -341,11 +342,11 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Group Fitpass +300 RSD** | Charged immediately on group Fitpass check-in (`fitpass_surcharge` payment, included in daily total); **voiding the arrival reverses the +300** and the charge shows as a per-arrival badge (Etapa 1, v1.12) |
 | **Smene (shift history)** | Admin `/smene`: weekly Mon–Sun view (`?date=`, optional `?staff=` filter); per-day worker summaries; shift end reason badges; coverage-gap warnings vs gym hours (09:00–close); CSV export; remote Admin access without counter cookie (`Tech.md` §5) |
 | **Pause / resume membership** | Member card: „Pauziraj članarinu" / „Nastavi članarinu" with confirm dialogs; extends `end_date` by exact paused calendar days on resume; dashboard amber badge + check-in warning; check-in while paused records arrival without session/debt side effects (`DB.md` §10.2, §11.4) |
+| **Solo Otvoreni session deduction** | Solo arrival on active session-based Otvoreni package (8/1, 12/1, 1/1) auto-decrements `sessions_left`; 0 sessions → check-in allowed without deduction (passive UI hint); last-session toast on 1→0; void restores session; time-based Otvoreni 30/1 and Kardio unchanged (`DB.md` §10.2) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
-- **Auto session deduction** for non-trainer Open packages (8/1, 12/1) on solo arrival — trainer-tick path only in v1.
 - **Offline / PWA** — check-in and payment queue when internet is down (Phase 3).
 - **Session override after expiry** — worker confirmation to use remaining sessions on an expired package (§3.4); accepted edge today: `aktivna` + past `end_date` still deducts until `promote_memberships()` flips status.
 - **End-of-day unreturned keys** — sign/report for keys not released via "otišao" (§3.7); open keys are visible in the keys panel for the selected day only.

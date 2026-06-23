@@ -93,7 +93,16 @@ export async function getMemberCheckinContext(
 
 export async function createMemberCheckin(
   input: unknown,
-): Promise<ActionOk<{ id: string; reserved: boolean }> | ActionError> {
+): Promise<
+  | ActionOk<{
+      id: string;
+      reserved: boolean;
+      sessionsLeft: number | null;
+      sessionDeducted: boolean;
+      isLastSession: boolean;
+    }>
+  | ActionError
+> {
   const guard = await requireCounterToday();
   if (!guard.ok) return guard;
 
@@ -166,8 +175,23 @@ export async function createMemberCheckin(
     withTrainer &&
     (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
 
+  const postCtx = await fetchCheckinMemberContext(memberId);
+  const sessionDeducted =
+    ctx.sessionsLeft != null &&
+    postCtx?.sessionsLeft != null &&
+    postCtx.sessionsLeft === ctx.sessionsLeft - 1;
+  const sessionsLeft = postCtx?.sessionsLeft ?? null;
+  const isLastSession = sessionDeducted && sessionsLeft === 0;
+
   revalidateDashboard();
-  return { ok: true, id: checkinId, reserved };
+  return {
+    ok: true,
+    id: checkinId,
+    reserved,
+    sessionsLeft,
+    sessionDeducted,
+    isLastSession,
+  };
 }
 
 export async function createFitpassCheckin(

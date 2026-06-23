@@ -215,6 +215,15 @@ function CheckinDialogForm({
         toast.warning(
           "Sesija je rezervisana (dužan termin) — naplatiti pri sledećoj uplati.",
         );
+      } else if (res.sessionDeducted) {
+        toast.success(
+          `Dolazak zabeležen. Skinuta 1 sesija (preostalo ${res.sessionsLeft}).`,
+        );
+        if (res.isLastSession) {
+          toast.info(
+            "Iskorišćena poslednja sesija — vreme za obnovu članarine.",
+          );
+        }
       } else {
         toast.success("Dolazak je zabeležen.");
       }
@@ -250,7 +259,9 @@ function CheckinDialogForm({
             <span className="rounded-md bg-muted px-2 py-1">
               {ctx.membershipStatusLabel}
             </span>
-            {ctx.sessionsLeft != null && !ctx.isTimeBased && (
+            {ctx.sessionsLeft != null &&
+              !ctx.isTimeBased &&
+              !(ctx.isSessionBasedOpen && !withTrainer) && (
               <span className="rounded-md bg-muted px-2 py-1">
                 Preostalo: {ctx.sessionsLeft} sesija
               </span>
@@ -269,6 +280,25 @@ function CheckinDialogForm({
                 ? `ključ ${ctx.openVisitKeyNo}`
                 : "bez ključa"}
               ). Ako je nova poseta, prvo evidentirajte „Otišao“.
+            </p>
+          )}
+
+          {ctx.isSessionBasedOpen &&
+            !withTrainer &&
+            ctx.membershipStatus !== "paused" &&
+            ctx.sessionsLeft != null &&
+            ctx.sessionsLeft > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Solo dolazak skida 1 sesiju (preostalo {ctx.sessionsLeft}).
+            </p>
+          )}
+
+          {ctx.isSessionBasedOpen &&
+            !withTrainer &&
+            ctx.membershipStatus !== "paused" &&
+            ctx.sessionsLeft === 0 && (
+            <p className="text-amber-600 dark:text-amber-400 text-xs">
+              Nema preostalih sesija — dolazak će biti zabeležen bez skidanja.
             </p>
           )}
 
@@ -385,7 +415,7 @@ function CheckinDialogForm({
                 )}
               </>
             )}
-            {!withTrainer && (
+            {!withTrainer && !ctx.isSessionBasedOpen && (
               <p className="text-muted-foreground text-xs">
                 Član trenira samostalno — sesija se ne oduzima.
               </p>

@@ -496,6 +496,7 @@ export async function fetchCheckinMemberContext(
         training_category (
           id,
           label,
+          code,
           is_trainer_based
         )
       )
@@ -531,9 +532,14 @@ export async function fetchCheckinMemberContext(
     training_category: {
       id: number;
       label: string;
+      code: string;
       is_trainer_based: boolean;
     };
   } | null;
+
+  const tc = unwrapJoin(mt?.training_category);
+  const isSessionBasedOpen =
+    tc?.code === "otvoreni" && mt?.is_time_based === false;
 
   const summary: MembershipSummary | null = membership
     ? {
@@ -567,11 +573,12 @@ export async function fetchCheckinMemberContext(
     discountFlag: member.discount_flag,
     membershipId: membership?.id ?? null,
     membershipLabel: mt?.label ?? null,
-    isTrainerBased: unwrapJoin(mt?.training_category)?.is_trainer_based ?? false,
-    trainingCategoryId: unwrapJoin(mt?.training_category)?.id ?? null,
-    trainingCategoryLabel: unwrapJoin(mt?.training_category)?.label ?? null,
+    isTrainerBased: tc?.is_trainer_based ?? false,
+    trainingCategoryId: tc?.id ?? null,
+    trainingCategoryLabel: tc?.label ?? null,
     sessionsLeft: membership?.sessions_left ?? null,
     isTimeBased: mt?.is_time_based ?? null,
+    isSessionBasedOpen,
     membershipStatus: status.kind,
     membershipStatusLabel: status.label,
     unsettledReservedCount: unsettledCount ?? 0,
