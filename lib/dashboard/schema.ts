@@ -6,6 +6,7 @@ export const memberCheckinSchema = z.object({
   withTrainer: z.boolean(),
   trainingCategoryId: z.number().int().positive().nullable(),
   trainerId: z.string().uuid().nullable(),
+  allowExpiredOverride: z.boolean().optional(),
 });
 
 export type MemberCheckinInput = z.infer<typeof memberCheckinSchema>;

@@ -102,6 +102,15 @@ export interface CheckinMemberContext {
   lastTrainerCategoryId: number | null;
   hasOpenVisit: boolean;
   openVisitKeyNo: number | null;
+  expiredPackages: Array<{
+    membershipId: string;
+    categoryId: number;
+    categoryCode: string;
+    categoryLabel: string;
+    isTrainerBased: boolean;
+    sessionsLeft: number;
+    endDate: string | null;
+  }>;
 }
 
 export interface CheckinSearchRow extends MemberSearchRow {
@@ -117,4 +126,16 @@ export interface LastKeyHolder {
   phone: string | null;
   isFitpass: boolean;
   lastHeldAt: string;
+}
+
+export interface UnreturnedKey {
+  keyNo: number;
+  checkinId: string;
+  memberId: string | null;
+  memberNo: number | null;
+  firstName: string | null;
+  lastName: string | null;
+  isFitpass: boolean;
+  checkedInAt: string;
+  staffUsername: string | null;
 }

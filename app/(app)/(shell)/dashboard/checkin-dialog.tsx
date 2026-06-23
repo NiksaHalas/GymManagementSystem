@@ -41,7 +41,7 @@ import type {
   TrainerCheckinCategory,
 } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
-import { formatFullName, formatMemberNo, formatRsd } from "@/lib/members/format";
+import { formatFullName, formatMemberNo, formatRsd, formatDate } from "@/lib/members/format";
 import { cn } from "@/lib/utils";
 
 const RESERVED_WARN_THRESHOLD = 3;
@@ -121,6 +121,7 @@ function CheckinDialogForm({
   const [pending, setPending] = React.useState(false);
   const [commentAckOpen, setCommentAckOpen] = React.useState(false);
   const [s3ConfirmOpen, setS3ConfirmOpen] = React.useState(false);
+  const [overrideConfirmOpen, setOverrideConfirmOpen] = React.useState(false);
   const commentShownRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -178,18 +179,65 @@ function CheckinDialogForm({
     return true;
   }
 
+  function getEffectiveCategoryId(): number | null {
+    if (!withTrainer || !ctx) return null;
+    if (needsManualCategory) {
+      return categoryId ? Number(categoryId) : null;
+    }
+    return ctx.trainingCategoryId;
+  }
+
+  function getOverrideCandidate() {
+    if (!ctx || ctx.membershipStatus === "paused") return null;
+
+    const effectiveCategoryId = getEffectiveCategoryId();
+
+    if (!withTrainer) {
+      const expiredOtvoreni = ctx.expiredPackages.find(
+        (p) => p.categoryCode === "otvoreni",
+      );
+      const normalSoloWouldDeduct =
+        ctx.isSessionBasedOpen &&
+        ctx.membershipStatus === "active" &&
+        (ctx.sessionsLeft ?? 0) > 0;
+      if (expiredOtvoreni && !normalSoloWouldDeduct) {
+        return expiredOtvoreni;
+      }
+      return null;
+    }
+
+    if (effectiveCategoryId == null) return null;
+
+    const expiredTrainer = ctx.expiredPackages.find(
+      (p) => p.isTrainerBased && p.categoryId === effectiveCategoryId,
+    );
+    const normalTrainerWouldDeduct =
+      ctx.isTrainerBased &&
+      ctx.membershipStatus === "active" &&
+      (ctx.sessionsLeft ?? 0) > 0;
+    if (expiredTrainer && !normalTrainerWouldDeduct) {
+      return expiredTrainer;
+    }
+    return null;
+  }
+
   function requestSubmit() {
     if (!validate() || !ctx) return;
-    // S3: member has an active (non-trainer) membership but the trainer session
-    // is not covered by it → confirm before recording a debt.
+
+    const overrideCandidate = getOverrideCandidate();
+    if (overrideCandidate) {
+      setOverrideConfirmOpen(true);
+      return;
+    }
+
     if (withTrainer && needsManualCategory && ctx.membershipId != null && ctx.membershipStatus !== "paused") {
       setS3ConfirmOpen(true);
       return;
     }
-    void doSubmit();
+    void doSubmit(false);
   }
 
-  async function doSubmit() {
+  async function doSubmit(allowExpiredOverride: boolean) {
     if (!ctx) return;
 
     setPending(true);
@@ -204,6 +252,7 @@ function CheckinDialogForm({
             : ctx.trainingCategoryId
           : null,
         trainerId: withTrainer ? trainerId : null,
+        allowExpiredOverride,
       });
 
       if (!res.ok) {
@@ -233,8 +282,11 @@ function CheckinDialogForm({
     } finally {
       setPending(false);
       setS3ConfirmOpen(false);
+      setOverrideConfirmOpen(false);
     }
   }
+
+  const overrideCandidate = getOverrideCandidate();
 
   return (
     <>
@@ -287,9 +339,17 @@ function CheckinDialogForm({
             !withTrainer &&
             ctx.membershipStatus !== "paused" &&
             ctx.sessionsLeft != null &&
-            ctx.sessionsLeft > 0 && (
+            ctx.sessionsLeft > 0 &&
+            ctx.membershipStatus === "active" && (
             <p className="text-muted-foreground text-xs">
               Solo dolazak skida 1 sesiju (preostalo {ctx.sessionsLeft}).
+            </p>
+          )}
+
+          {!withTrainer && overrideCandidate?.categoryCode === "otvoreni" && (
+            <p className="text-muted-foreground text-xs">
+              Solo dolazak će iskoristiti 1 sesiju sa istekle članarine (preostalo{" "}
+              {overrideCandidate.sessionsLeft}).
             </p>
           )}
 
@@ -478,8 +538,36 @@ function CheckinDialogForm({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Otkaži</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void doSubmit()}>
+            <AlertDialogAction onClick={() => void doSubmit(false)}>
               Nastavi
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={overrideConfirmOpen} onOpenChange={setOverrideConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Istekla članarina</AlertDialogTitle>
+            <AlertDialogDescription>
+              {overrideCandidate && (
+                <>
+                  Članarina je istekla{" "}
+                  {overrideCandidate.endDate
+                    ? formatDate(overrideCandidate.endDate)
+                    : "—"}
+                  . Preostalo {overrideCandidate.sessionsLeft} sesija. Iskoristiti
+                  jednu?
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => void doSubmit(false)}>
+              Otkaži
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => void doSubmit(true)}>
+              Potvrdi
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

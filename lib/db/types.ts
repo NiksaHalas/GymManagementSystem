@@ -891,6 +891,7 @@ export type Database = {
       cleanup_login_attempts: { Args: never; Returns: undefined }
       create_checkin: {
         Args: {
+          p_allow_expired_override?: boolean
           p_business_date?: string
           p_is_fitpass?: boolean
           p_is_group_fitpass?: boolean

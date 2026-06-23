@@ -15,6 +15,7 @@ import {
 import type { CheckinMemberContext, CheckinSearchRow, LastKeyHolder } from "@/lib/dashboard/types";
 import {
   fetchCheckinMemberContext,
+  fetchCheckinSubmitResult,
   fetchLastKeyHolder,
   fetchOpenVisitsForMembers,
   fetchTrainerCheckinCategories,
@@ -156,6 +157,7 @@ export async function createMemberCheckin(
     p_is_fitpass: false,
     p_is_group_fitpass: false,
     p_business_date: businessToday(),
+    p_allow_expired_override: parsed.data.allowExpiredOverride ?? false,
   });
 
   if (error) return { ok: false, error: error.message };
@@ -170,27 +172,16 @@ export async function createMemberCheckin(
     guard.staffId,
   );
 
-  const reserved =
-    ctx.membershipStatus !== "paused" &&
-    withTrainer &&
-    (!ctx.isTrainerBased || (ctx.sessionsLeft ?? 0) <= 0);
-
-  const postCtx = await fetchCheckinMemberContext(memberId);
-  const sessionDeducted =
-    ctx.sessionsLeft != null &&
-    postCtx?.sessionsLeft != null &&
-    postCtx.sessionsLeft === ctx.sessionsLeft - 1;
-  const sessionsLeft = postCtx?.sessionsLeft ?? null;
-  const isLastSession = sessionDeducted && sessionsLeft === 0;
+  const result = await fetchCheckinSubmitResult(checkinId);
 
   revalidateDashboard();
   return {
     ok: true,
     id: checkinId,
-    reserved,
-    sessionsLeft,
-    sessionDeducted,
-    isLastSession,
+    reserved: result.reserved,
+    sessionsLeft: result.sessionsLeft,
+    sessionDeducted: result.sessionDeducted,
+    isLastSession: result.isLastSession,
   };
 }
 

@@ -10,19 +10,23 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatKeyHolder } from "@/lib/dashboard/format";
 import { findLastKeyHolder } from "@/app/(app)/(shell)/dashboard/actions";
-import type { KeyHolder, LastKeyHolder } from "@/lib/dashboard/types";
+import type { KeyHolder, LastKeyHolder, UnreturnedKey } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";
 import { formatBelgradeDateTime } from "@/lib/shifts/format";
 
 interface KeysPanelProps {
   holders: KeyHolder[];
+  unreturnedKeys: UnreturnedKey[];
+  businessDate: string;
+  isPastClosing: boolean;
 }
 
-export function KeysPanel({ holders }: KeysPanelProps) {
+export function KeysPanel({ holders, unreturnedKeys, isPastClosing }: KeysPanelProps) {
   const [keyInput, setKeyInput] = React.useState("");
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const [searchResult, setSearchResult] = React.useState<LastKeyHolder | null | "none">(
@@ -134,12 +138,105 @@ export function KeysPanel({ holders }: KeysPanelProps) {
         </div>
       )}
 
+      {unreturnedKeys.length > 0 && (
+        <UnreturnedKeysSection
+          keys={unreturnedKeys}
+          isPastClosing={isPastClosing}
+        />
+      )}
+
       <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
         {holders.map((holder) => (
           <KeyCell key={holder.keyNo} holder={holder} />
         ))}
       </div>
     </div>
+  );
+}
+
+function UnreturnedKeysSection({
+  keys,
+  isPastClosing,
+}: {
+  keys: UnreturnedKey[];
+  isPastClosing: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "mb-3 rounded-md border p-2 text-xs",
+        isPastClosing
+          ? "border-destructive/50 bg-destructive/5"
+          : "border-muted bg-muted/20",
+      )}
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span
+          className={cn(
+            "font-semibold",
+            isPastClosing && "text-destructive",
+          )}
+        >
+          Nevraćeni ključevi
+        </span>
+        <Badge variant="destructive" className="h-5 min-w-5 justify-center px-1">
+          {keys.length}
+        </Badge>
+      </div>
+      {isPastClosing && (
+        <p className="text-destructive mb-2 text-xs">
+          Posle zatvaranja — proverite ko je odneo ključ.
+        </p>
+      )}
+      <ul className="space-y-1.5">
+        {keys.map((k) => (
+          <UnreturnedKeyRow key={k.keyNo} item={k} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function UnreturnedKeyRow({ item }: { item: UnreturnedKey }) {
+  const holderLabel = formatKeyHolder({
+    keyNo: item.keyNo,
+    checkinId: item.checkinId,
+    memberId: item.memberId,
+    memberNo: item.memberNo,
+    firstName: item.firstName,
+    lastName: item.lastName,
+    isFitpass: item.isFitpass,
+    isOpen: true,
+  });
+
+  return (
+    <li className="text-muted-foreground">
+      <span className="font-medium text-foreground">Ključ {item.keyNo}</span>
+      {" · "}
+      {item.isFitpass ? (
+        <>
+          Fitpass
+          <span className="italic"> · nema kontakta</span>
+        </>
+      ) : item.memberId ? (
+        <Link
+          href={`/clanovi/${item.memberId}`}
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          {holderLabel}
+        </Link>
+      ) : (
+        holderLabel
+      )}
+      {" · "}
+      {formatBelgradeDateTime(item.checkedInAt)}
+      {item.staffUsername && (
+        <>
+          {" · "}
+          <span>@{item.staffUsername}</span>
+        </>
+      )}
+    </li>
   );
 }
 

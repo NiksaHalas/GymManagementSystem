@@ -8,8 +8,10 @@ import {
   fetchSoonToExpire,
   fetchActiveStaff,
   fetchTrainerCheckinCategories,
+  fetchUnreturnedKeys,
 } from "@/lib/dashboard/queries";
 import { fetchShiftsForBusinessDay } from "@/lib/shifts/queries";
+import { isPastGymClosing } from "@/lib/dashboard/closing";
 import { getPageTitle } from "@/lib/nav";
 import { DashboardCounter } from "@/app/(app)/(shell)/dashboard/dashboard-counter";
 import { DashboardOverview } from "@/app/(app)/(shell)/dashboard/dashboard-overview";
@@ -44,10 +46,11 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const canOperate = counter && isToday;
   const isAdmin = staff?.role === "admin";
 
-  const [checkins, keyHolders, soonExpire, staffOptions, trainerCategories, shifts] =
+  const [checkins, keyHolders, unreturnedKeys, soonExpire, staffOptions, trainerCategories, shifts] =
     await Promise.all([
       fetchDayCheckins(businessDate, { unassignedOnly }),
       fetchKeyOccupancy(businessDate),
+      fetchUnreturnedKeys(businessDate),
       fetchSoonToExpire(),
       canOperate ? fetchActiveStaff() : Promise.resolve([]),
       canOperate ? fetchTrainerCheckinCategories() : Promise.resolve([]),
@@ -61,12 +64,16 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       ? await fetchDayStats(businessDate, keyHolders)
       : null;
 
+  const isPastClosing = isPastGymClosing(businessDate);
+
   if (!counter && isAdmin && stats && !unassignedOnly) {
     return (
       <DashboardOverview
         businessDate={businessDate}
         checkins={checkins}
         keyHolders={keyHolders}
+        unreturnedKeys={unreturnedKeys}
+        isPastClosing={isPastClosing}
         stats={stats}
       />
     );
@@ -83,6 +90,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         businessDate={businessDate}
         checkins={checkins}
         keyHolders={keyHolders}
+        unreturnedKeys={unreturnedKeys}
+        isPastClosing={isPastClosing}
         soonExpire={soonExpire}
         staffOptions={staffOptions}
         trainerCategories={trainerCategories}

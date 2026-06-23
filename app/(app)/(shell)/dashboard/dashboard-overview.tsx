@@ -8,12 +8,15 @@ import type {
   DashboardCheckinRow,
   DayStats,
   KeyHolder,
+  UnreturnedKey,
 } from "@/lib/dashboard/types";
 
 interface DashboardOverviewProps {
   businessDate: string;
   checkins: DashboardCheckinRow[];
   keyHolders: KeyHolder[];
+  unreturnedKeys: UnreturnedKey[];
+  isPastClosing: boolean;
   stats: DayStats;
 }
 
@@ -21,6 +24,8 @@ export function DashboardOverview({
   businessDate,
   checkins,
   keyHolders,
+  unreturnedKeys,
+  isPastClosing,
   stats,
 }: DashboardOverviewProps) {
   return (
@@ -70,7 +75,12 @@ export function DashboardOverview({
           <ArrivalsTable rows={checkins} canOperate={false} occupiedOpenKeys={[]} />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
-          <KeysPanel holders={keyHolders} />
+          <KeysPanel
+            holders={keyHolders}
+            unreturnedKeys={unreturnedKeys}
+            isPastClosing={isPastClosing}
+            businessDate={businessDate}
+          />
         </aside>
       </div>
     </div>

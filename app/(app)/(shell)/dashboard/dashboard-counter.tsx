@@ -15,6 +15,7 @@ import type {
   SoonExpireMember,
   StaffOption,
   TrainerCheckinCategory,
+  UnreturnedKey,
 } from "@/lib/dashboard/types";
 import type { ShiftOption } from "@/lib/shifts/queries";
 
@@ -22,6 +23,8 @@ interface DashboardCounterProps {
   businessDate: string;
   checkins: DashboardCheckinRow[];
   keyHolders: KeyHolder[];
+  unreturnedKeys: UnreturnedKey[];
+  isPastClosing: boolean;
   soonExpire: SoonExpireMember[];
   staffOptions: StaffOption[];
   trainerCategories: TrainerCheckinCategory[];
@@ -34,6 +37,8 @@ export function DashboardCounter({
   businessDate,
   checkins,
   keyHolders,
+  unreturnedKeys,
+  isPastClosing,
   soonExpire,
   staffOptions,
   trainerCategories,
@@ -89,7 +94,12 @@ export function DashboardCounter({
           />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
-          <KeysPanel holders={keyHolders} />
+          <KeysPanel
+            holders={keyHolders}
+            unreturnedKeys={unreturnedKeys}
+            isPastClosing={isPastClosing}
+            businessDate={businessDate}
+          />
         </aside>
       </div>
 

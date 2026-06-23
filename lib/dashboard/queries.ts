@@ -14,6 +14,7 @@ import type {
   SoonExpireMember,
   StaffOption,
   TrainerCheckinCategory,
+  UnreturnedKey,
 } from "@/lib/dashboard/types";
 import { KEY_COUNT } from "@/lib/dashboard/types";
 import { getShiftAttributionLaunchAt } from "@/lib/shifts/config";
@@ -370,6 +371,69 @@ export async function fetchKeyOccupancy(
   return holders;
 }
 
+export async function fetchUnreturnedKeys(
+  businessDate: string,
+): Promise<UnreturnedKey[]> {
+  const supabase = await getClient();
+
+  const { data: checkins, error } = await supabase
+    .from("checkin")
+    .select(
+      `
+      id,
+      key_no,
+      is_fitpass,
+      created_at,
+      member_id,
+      member ( member_no, first_name, last_name ),
+      staff!checkin_staff_id_fkey ( username )
+    `,
+    )
+    .eq("business_date", businessDate)
+    .eq("voided", false)
+    .eq("key_returned", false)
+    .not("key_no", "is", null)
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  const latestByKey = new Map<number, (typeof checkins)[0]>();
+  for (const c of checkins ?? []) {
+    if (c.key_no == null) continue;
+    if (!latestByKey.has(c.key_no)) {
+      latestByKey.set(c.key_no, c);
+    }
+  }
+
+  const unreturned: UnreturnedKey[] = [];
+  for (const c of latestByKey.values()) {
+    const memberRaw = c.member as unknown;
+    const member = (Array.isArray(memberRaw) ? memberRaw[0] : memberRaw) as {
+      member_no: number | null;
+      first_name: string;
+      last_name: string;
+    } | null;
+    const staffRaw = c.staff as unknown;
+    const staff = (Array.isArray(staffRaw) ? staffRaw[0] : staffRaw) as {
+      username: string;
+    } | null;
+
+    unreturned.push({
+      keyNo: c.key_no as number,
+      checkinId: c.id,
+      memberId: c.member_id,
+      memberNo: member?.member_no ?? null,
+      firstName: member?.first_name ?? (c.is_fitpass ? "Fitpass" : null),
+      lastName: member?.last_name ?? null,
+      isFitpass: c.is_fitpass,
+      checkedInAt: c.created_at,
+      staffUsername: staff?.username ?? null,
+    });
+  }
+
+  return unreturned.sort((a, b) => a.keyNo - b.keyNo);
+}
+
 export async function fetchSoonToExpire(): Promise<SoonExpireMember[]> {
   const supabase = await getClient();
   const today = businessToday();
@@ -563,6 +627,62 @@ export async function fetchCheckinMemberContext(
     .limit(1)
     .maybeSingle();
 
+  const { data: expiredRows, error: expiredError } = await supabase
+    .from("membership")
+    .select(
+      `
+      id,
+      sessions_left,
+      end_date,
+      status,
+      membership_type (
+        is_time_based,
+        training_category (
+          id,
+          code,
+          label,
+          is_trainer_based
+        )
+      )
+    `,
+    )
+    .eq("member_id", memberId)
+    .gt("sessions_left", 0)
+    .or(`status.eq.istekla,and(status.eq.aktivna,end_date.lt.${today})`);
+
+  if (expiredError) throw new Error(expiredError.message);
+
+  const expiredPackages = (expiredRows ?? [])
+    .map((row) => {
+      const mt = unwrapJoin(row.membership_type) as {
+        is_time_based: boolean;
+        training_category: {
+          id: number;
+          code: string;
+          label: string;
+          is_trainer_based: boolean;
+        };
+      } | null;
+      const tc = unwrapJoin(mt?.training_category);
+      if (!mt || mt.is_time_based || !tc) return null;
+      return {
+        membershipId: row.id,
+        categoryId: tc.id,
+        categoryCode: tc.code,
+        categoryLabel: tc.label,
+        isTrainerBased: tc.is_trainer_based,
+        sessionsLeft: row.sessions_left as number,
+        endDate: row.end_date as string | null,
+      };
+    })
+    .filter((p): p is NonNullable<typeof p> => p != null)
+    .sort((a, b) => {
+      const da = a.endDate ?? "";
+      const db = b.endDate ?? "";
+      if (da !== db) return db.localeCompare(da);
+      return 0;
+    });
+
   return {
     memberId: member.id,
     memberNo: member.member_no,
@@ -585,6 +705,7 @@ export async function fetchCheckinMemberContext(
     lastTrainerCategoryId: lastTrainer?.training_category_id ?? null,
     hasOpenVisit: openVisit != null,
     openVisitKeyNo: openVisit?.key_no ?? null,
+    expiredPackages,
   };
 }
 
@@ -613,6 +734,55 @@ export async function fetchOpenVisitsForMembers(
     }
   }
   return map;
+}
+
+export interface CheckinSubmitResult {
+  sessionDeducted: boolean;
+  reserved: boolean;
+  sessionsLeft: number | null;
+  isLastSession: boolean;
+}
+
+/** Authoritative post-RPC read for check-in result feedback (override-safe). */
+export async function fetchCheckinSubmitResult(
+  checkinId: string,
+): Promise<CheckinSubmitResult> {
+  const supabase = await getClient();
+
+  const { data: checkin, error: checkinError } = await supabase
+    .from("checkin")
+    .select("decremented_session, membership_id")
+    .eq("id", checkinId)
+    .single();
+
+  if (checkinError) throw new Error(checkinError.message);
+
+  const sessionDeducted = checkin.decremented_session;
+
+  const { count: reservedCount } = await supabase
+    .from("reserved_session")
+    .select("id", { count: "exact", head: true })
+    .eq("checkin_id", checkinId)
+    .eq("settled", false);
+
+  const reserved = (reservedCount ?? 0) > 0;
+
+  let sessionsLeft: number | null = null;
+  if (checkin.membership_id) {
+    const { data: membership } = await supabase
+      .from("membership")
+      .select("sessions_left")
+      .eq("id", checkin.membership_id)
+      .maybeSingle();
+    sessionsLeft = membership?.sessions_left ?? null;
+  }
+
+  return {
+    sessionDeducted,
+    reserved,
+    sessionsLeft,
+    isLastSession: sessionDeducted && sessionsLeft === 0,
+  };
 }
 
 export async function fetchLastKeyHolder(

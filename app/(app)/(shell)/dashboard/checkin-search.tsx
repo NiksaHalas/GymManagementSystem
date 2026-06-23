@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/popover";
 import { searchMembersForCheckin } from "@/app/(app)/(shell)/dashboard/actions";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";
+import { businessToday } from "@/lib/time/business-day";
 import type { CheckinSearchRow } from "@/lib/dashboard/types";
 import { CreateMemberDialog } from "@/app/(app)/(shell)/clanovi/create-member-dialog";
 
@@ -98,7 +99,17 @@ export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinS
                 </CommandEmpty>
               )}
               <CommandGroup>
-                {rows.map((m) => (
+                {rows.map((m) => {
+                  const today = businessToday();
+                  const expiredWithSessions =
+                    m.membership_is_time_based === false &&
+                    (m.membership_sessions_left ?? 0) > 0 &&
+                    (m.membership_status === "istekla" ||
+                      (m.membership_status === "aktivna" &&
+                        m.membership_end_date != null &&
+                        m.membership_end_date < today));
+
+                  return (
                   <CommandItem
                     key={m.id}
                     value={m.id}
@@ -115,6 +126,11 @@ export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinS
                           {formatMemberNo(m.member_no)} · {m.phone}
                           {m.membership_label ? ` · ${m.membership_label}` : ""}
                         </span>
+                        {expiredWithSessions && (
+                          <span className="w-fit rounded-md bg-red-500/15 px-1.5 py-0.5 text-xs text-red-700 dark:text-red-400">
+                            Istekla — preostalo {m.membership_sessions_left} sesija
+                          </span>
+                        )}
                         {m.openVisit != null && (
                           <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-400 w-fit">
                             {m.openVisit.keyNo != null
@@ -140,7 +156,8 @@ export function CheckinSearch({ onSelectMember, onFitpass, onPayment }: CheckinS
                       </Button>
                     </div>
                   </CommandItem>
-                ))}
+                  );
+                })}
               </CommandGroup>
             </CommandList>
           </Command>

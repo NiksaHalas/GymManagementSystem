@@ -1,7 +1,7 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.22
-Date: 2026-06-22
+Version: 1.23
+Date: 2026-06-23
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
@@ -28,6 +28,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.20 records **check-in dialog UX fix + deferred duplicate guard** (2026-06-22; **no schema change**): `checkin-dialog.tsx` now **closes after every successful** `createMemberCheckin` (supersedes v1.18 stay-open / `lastCheckinId` post-confirm pay path — pay-after-check-in is via arrivals-row **Naplati** only). PRD §9.2 adds **duplicate check-in while member still present** as pre-launch polish. See `PRD.md` v1.17.
 > v1.21 records **open-visit guard (GYM05) + key-number search** (2026-06-22; migration `20260622130000_open_visit_guard`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): (1) **GYM05** — server hard-block when member has open visit today; passive amber hints in `checkin-search.tsx` (badge per row) and `checkin-dialog.tsx` (`hasOpenVisit` / `openVisitKeyNo` from `fetchCheckinMemberContext`); confirm button stays enabled (toast on submit). (2) **Key search** — `keys-panel.tsx` input + `findLastKeyHolder` (`requireUser()`, not counter-only); `fetchLastKeyHolder` / `fetchOpenVisitsForMembers` in `lib/dashboard/queries.ts`. Verification: `scripts/verify_open_visit_guard.sql`. See `DB.md` v1.21 / PRD v1.18.
 > v1.22 records **solo Otvoreni auto session deduction** (2026-06-22; migration `20260622140000_open_solo_session_deduct`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): solo arrival on active session-based Otvoreni (`training_category.code='otvoreni'`, `is_time_based=false`) decrements `sessions_left` without trainer tick or `session_log`; 0 sessions → check-in without deduction; `createMemberCheckin` refetches context post-RPC for toast state; `checkin-dialog.tsx` passive hints + last-session toast. Verification: `scripts/verify_open_solo_session.sql`. See `DB.md` v1.22 / PRD v1.19.
+> v1.23 records **Phase 2 dashboard closure** (2026-06-23): (1) **Unreturned keys** — `fetchUnreturnedKeys(businessDate)` + keys panel „Nevraćeni ključevi" (count badge, holder/time/worker, `isPastGymClosing` via `lib/dashboard/closing.ts`); (2) **Session override after expiry** — migration `20260623140000`, `p_allow_expired_override` on `create_checkin`; `fetchCheckinMemberContext.expiredPackages`; override confirm in `checkin-dialog.tsx`; authoritative post-RPC `fetchCheckinSubmitResult`; search badge „Istekla — preostalo {n} sesija". Verification: `scripts/verify_session_override.sql`. See `PRD.md` v1.20 / `DB.md` v1.23.
 
 ---
 
@@ -238,9 +239,9 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 | `checkin-search` — "Naplati" | `null` | Auto on next `createMemberCheckin`, or auto-resolved if check-in already exists |
 | Member card — `MemberPayButton` | `null` | Auto-resolved if same-day check-in exists; else orphan until check-in |
 
-**UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel` (today occupancy + key-number history search, v1.21), `date-nav`, `soon-expire-badge`.
+**UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, **expired-with-sessions badge**, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; **expired-session override confirm**; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel` (today occupancy + key-number history search + **unreturned-keys report**, v1.23), `date-nav`, `soon-expire-badge`.
 
-**Deferred from dashboard v1** (see `PRD.md` §9): offline queue, end-of-day unreturned-keys report.
+**Deferred from dashboard v1** (see `PRD.md` §9): offline queue.
 
 ### 2.4 Pazar (daily takings & cash payment)
 Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
@@ -498,5 +499,5 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 ## 12. Phased delivery (maps to SoW)
 - **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package + payment ↔ check-in Etapa 2 (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, membership `payment.checkin_id` auto-link (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
-- **Phase 2 — Advanced**: non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7). *(Trainer sessions, reserved debt at check-in, Fitpass + surcharge void, payment void + membership revert, monthly/yearly takings + Admin export, shift runtime + reconcile + history UI, remote admin overview, payment ↔ check-in link, **pause/resume membership**, **open-visit guard (GYM05)**, **key-number search UI** — **done**.)*
+- **Phase 2 — Advanced**: non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7). *(All Phase 2 dashboard items above — **done** v1.23.)*
 - **Phase 3 — Reliability**: PWA + offline check-in/payment + sync (`lib/offline/`); automatic USB backup 3×/day (`scripts/backup-usb.mjs`).
