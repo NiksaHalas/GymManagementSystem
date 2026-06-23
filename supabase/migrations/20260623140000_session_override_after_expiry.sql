@@ -4,6 +4,7 @@
 -- membership_id restore path covers override deductions.
 
 drop function if exists create_checkin(uuid, int, boolean, bigint, uuid, boolean, boolean, date);
+drop function if exists create_checkin(uuid, int, boolean, bigint, uuid, boolean, boolean, date, boolean);
 
 create function create_checkin(
   p_member_id              uuid    default null,
