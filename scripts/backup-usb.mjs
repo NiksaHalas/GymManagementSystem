@@ -40,6 +40,12 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${bytes} B`;
+}
+
 async function pgDump(outFile, databaseUrl) {
   return new Promise((resolve, reject) => {
     const child = spawn("pg_dump", [databaseUrl, "--format=custom", "--file", outFile], {
@@ -93,17 +99,24 @@ async function main() {
   const runDir = join(baseDir, stamp());
   await mkdir(runDir, { recursive: true });
 
+  let totalBytes = 0;
   if (databaseUrl) {
     const dumpFile = join(runDir, "full.dump");
     console.log("Running pg_dump →", dumpFile);
     await pgDump(dumpFile, databaseUrl);
+    totalBytes = (await stat(dumpFile)).size;
   } else {
     console.log("DATABASE_URL unset — JSON export fallback");
     const supabase = createClient(url, key, { auth: { persistSession: false } });
     await jsonExport(runDir, supabase);
+    const files = await readdir(runDir);
+    for (const name of files.filter((n) => n.endsWith(".json"))) {
+      totalBytes += (await stat(join(runDir, name))).size;
+    }
   }
 
   await rotate(baseDir);
+  console.log(`Backup size: ${formatBytes(totalBytes)}`);
   console.log("Backup complete:", runDir);
 }
 
