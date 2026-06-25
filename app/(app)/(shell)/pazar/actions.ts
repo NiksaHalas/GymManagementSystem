@@ -89,7 +89,6 @@ export async function recordPayment(
     p_settle_reserved_ids: parsed.data.settleReservedIds,
     p_checkin_id: resolvedCheckinId,
     p_business_date: today,
-    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };

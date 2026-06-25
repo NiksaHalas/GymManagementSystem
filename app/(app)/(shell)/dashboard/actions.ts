@@ -159,7 +159,6 @@ export async function createMemberCheckin(
     p_is_group_fitpass: false,
     p_business_date: bizDate,
     p_allow_expired_override: parsed.data.allowExpiredOverride ?? false,
-    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };
@@ -209,7 +208,6 @@ export async function createFitpassCheckin(
     p_is_fitpass: true,
     p_is_group_fitpass: parsed.data.isGroupFitpass,
     p_business_date: bizDate,
-    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };

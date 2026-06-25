@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.25
+Version: 1.26
 Date: 2026-06-25
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -31,6 +31,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.23 records **Phase 2 dashboard closure** (2026-06-23): (1) **Unreturned keys** — `fetchUnreturnedKeys(businessDate)` + keys panel „Nevraćeni ključevi" (count badge, holder/time/worker, `isPastGymClosing` via `lib/dashboard/closing.ts`); (2) **Session override after expiry** — migration `20260623140000`, `p_allow_expired_override` on `create_checkin`; `fetchCheckinMemberContext.expiredPackages`; override confirm in `checkin-dialog.tsx`; authoritative post-RPC `fetchCheckinSubmitResult`; search badge „Istekla — preostalo {n} sesija". Verification: `scripts/verify_session_override.sql`. See `PRD.md` v1.20 / `DB.md` v1.23.
 > v1.24 records **Phase 3 — PWA + offline + USB backup** (2026-06-25): `@serwist/next` + `serwist` + `idb`; `lib/offline/` (IndexedDB cache/outbox, main-thread `sync.ts`, `useOfflineSync`, submit wrappers); counter-only offline check-in/payment with optimistic UI + chronological drain via existing server actions; migration `20260625120000` adds **`p_id`** idempotency on `create_checkin` / `record_payment`; kill switch **`NEXT_PUBLIC_OFFLINE_ENABLED`**; `GET /api/health`; `scripts/backup-usb.mjs`; verification `scripts/verify_offline_idempotency.sql`. Repo: **40** migrations. See `PRD.md` v1.21 / `DB.md` v1.24.
 > v1.25 records **Phase 3 rollback — online-only counter** (2026-06-25): removed PWA/offline layer (`lib/offline/`, `@serwist/next`, `serwist`, `idb`, service worker, connectivity UI, Playwright offline e2e). Dashboard check-in/payment use **direct server actions** only. **`scripts/backup-usb.mjs` retained**; cloud backup = ops plan (not app code). DB `p_id` migration **not reverted**. Delivery: standard web app (Chrome/Edge/Firefox). See `PRD.md` v1.22 / `DB.md` v1.25.
+> v1.26 records **Phase 3 DB rollback — revert offline `p_id`** (2026-06-25): migration `20260625160000_revert_offline_p_id` restores `create_checkin` / `record_payment` without `p_id`; app schemas/actions no longer send client ids. **No table/data changes.** Repo: **41** migrations. See `PRD.md` v1.23 / `DB.md` v1.26.
 
 ---
 
@@ -472,4 +473,4 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 - **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package + payment ↔ check-in Etapa 2 (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, membership `payment.checkin_id` auto-link (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
 - **Phase 2 — Advanced**: non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7). *(All Phase 2 dashboard items above — **done** v1.23.)*
-- **Phase 3 — Reliability** *(partial — online-only)*: USB backup script (`scripts/backup-usb.mjs`); DB `p_id` idempotency on `create_checkin` / `record_payment` (migration retained, optional param). Offline/PWA **removed** (v1.25).
+- **Phase 3 — Reliability** *(partial — online-only)*: USB backup script (`scripts/backup-usb.mjs`). Offline/PWA **removed** (v1.25); offline DB idempotency **`p_id` reverted** (v1.26).

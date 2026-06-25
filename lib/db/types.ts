@@ -893,7 +893,6 @@ export type Database = {
         Args: {
           p_allow_expired_override?: boolean
           p_business_date?: string
-          p_id?: string
           p_is_fitpass?: boolean
           p_is_group_fitpass?: boolean
           p_key_no?: number
@@ -923,24 +922,25 @@ export type Database = {
         }
       }
       end_shift: { Args: never; Returns: undefined }
-      has_open_shift: { Args: never; Returns: boolean }
       handover_shift: { Args: never; Returns: undefined }
+      has_open_shift: { Args: never; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       offered_membership_price: {
         Args: { p_member_id: string; p_membership_type_id: number }
         Returns: number
       }
       open_or_resume_shift: { Args: never; Returns: string }
-      pause_membership: { Args: { p_membership_id: string }; Returns: undefined }
+      pause_membership: {
+        Args: { p_membership_id: string }
+        Returns: undefined
+      }
       promote_memberships: { Args: never; Returns: undefined }
-      resume_membership: { Args: { p_membership_id: string }; Returns: undefined }
       record_payment: {
         Args: {
           p_amount_rsd?: number
           p_business_date?: string
           p_checkin_id?: string
           p_custom_reason?: string
-          p_id?: string
           p_is_custom_price?: boolean
           p_member_id: string
           p_membership_type_id?: number
@@ -948,6 +948,10 @@ export type Database = {
           p_start_mode?: Database["public"]["Enums"]["membership_start_mode"]
         }
         Returns: string
+      }
+      resume_membership: {
+        Args: { p_membership_id: string }
+        Returns: undefined
       }
       search_members: {
         Args: {

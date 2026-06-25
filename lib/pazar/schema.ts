@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const recordPaymentSchema = z.object({
-  id: z.string().uuid().optional(),
   businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   memberId: z.string().uuid(),
   membershipTypeId: z.number().int().positive().nullable(),
