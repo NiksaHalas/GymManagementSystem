@@ -328,9 +328,9 @@ Rules:
 
 ---
 
-## 9. Implementation status (as of 2026-06-19)
+## 9. Implementation status (as of 2026-06-25)
 
-This section tracks delivery against the requirements above. Technical detail lives in `Tech.md` / `DB.md`.
+This section tracks delivery against the requirements above (Phase 0–3, online-only). Technical detail lives in `Tech.md` / `DB.md`. Phase 3 added the unreturned-keys report, session override after expiry, pause/resume, the Fitpass +300 surcharge, and the USB backup script; the offline/PWA layer that was briefly added in Phase 3 was **rolled back to online-only** (2026-06-25, see v1.22–v1.23).
 
 ### 9.1 Done
 | Area | Scope |
@@ -351,9 +351,7 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Online-only counter (Phase 3 rollback)** | Offline/PWA layer removed (2026-06-25); check-in and payment require internet; direct server actions only |
 
 ### 9.2 Dashboard v1 — explicitly deferred
-These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
-
-- Duplicate check-in while member still present (pre-launch polish; see v1.17).
+Nema preostalih deferred stavki za dashboard v1. (Duplicate check-in while member still present je sada Done — open-visit guard **GYM05**, migracija `20260622130000_open_visit_guard`; vidi §9.1 „Dashboard v1".)
 
 ### 9.3 Not started (post-MVP)
 - Cloud backup automation beyond Supabase defaults (operational plan; not in app code).
