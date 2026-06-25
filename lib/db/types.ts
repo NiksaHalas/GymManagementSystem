@@ -893,6 +893,7 @@ export type Database = {
         Args: {
           p_allow_expired_override?: boolean
           p_business_date?: string
+          p_id?: string
           p_is_fitpass?: boolean
           p_is_group_fitpass?: boolean
           p_key_no?: number
@@ -939,6 +940,7 @@ export type Database = {
           p_business_date?: string
           p_checkin_id?: string
           p_custom_reason?: string
+          p_id?: string
           p_is_custom_price?: boolean
           p_member_id: string
           p_membership_type_id?: number

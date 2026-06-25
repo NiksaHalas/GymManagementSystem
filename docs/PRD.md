@@ -346,11 +346,12 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Solo Otvoreni session deduction** | Solo arrival on active session-based Otvoreni package (8/1, 12/1, 1/1) auto-decrements `sessions_left`; 0 sessions → check-in allowed without deduction (passive UI hint); last-session toast on 1→0; void restores session; time-based Otvoreni 30/1 and Kardio unchanged (`DB.md` §10.2) |
 | **Unreturned keys (§3.7)** | Keys panel „Nevraćeni ključevi" section: live list of physical keys not returned via „Otišao" for the selected `business_date` (holder, check-in time, worker); destructive count badge; stronger styling after gym close / on past days; workers + remote Admin overview |
 | **Session override after expiry (§3.4)** | Worker confirm to use 1 remaining session on an expired session-based package (solo Otvoreni or trainer, same category); decline → arrival without deduction (trainer → `reserved_session` debt); search badge „Istekla — preostalo {n} sesija"; void restores session (`DB.md` §10.2) |
+| **Offline / PWA (Phase 3)** | PWA shell (`@serwist/next`); IndexedDB cache + outbox (`lib/offline/`); counter-only offline check-in/payment with optimistic UI + chronological sync; idempotent RPCs (`p_id`); kill switch `NEXT_PUBLIC_OFFLINE_ENABLED`; USB backup script (`scripts/backup-usb.mjs`) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
-- **Offline / PWA** — check-in and payment queue when internet is down (Phase 3).
+*(none — offline moved to §9.1)*
 
 ### 9.3 Not started (post-MVP / Phase 2–3)
-- **USB backup** companion script (scheduled 3×/day) — Phase 3.
+- *(USB backup script implemented — schedule via Windows Task Scheduler on the counter PC.)*

@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
 import { getPageTitle } from "@/lib/nav";
+import { OfflineStatusHeader } from "@/components/offline-status";
 
 interface AppHeaderProps {
   pendingAttributionCount?: number;
@@ -23,10 +24,11 @@ export function AppHeader({ pendingAttributionCount = 0 }: AppHeaderProps) {
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 h-4" />
       <h1 className="text-sm font-semibold tracking-tight">{title}</h1>
+      <div className="ml-auto flex items-center gap-2">
       {showReconcile && (
         <Link
           href={`${pathname}?unassigned=1`}
-          className="ml-auto flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
         >
           <Badge variant="destructive" className="h-5 min-w-5 justify-center px-1">
             {pendingAttributionCount > 99 ? "99+" : pendingAttributionCount}
@@ -34,6 +36,8 @@ export function AppHeader({ pendingAttributionCount = 0 }: AppHeaderProps) {
           <span className="hidden sm:inline">Nedodeljene operacije</span>
         </Link>
       )}
+      <OfflineStatusHeader />
+      </div>
     </header>
   );
 }

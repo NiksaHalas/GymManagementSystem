@@ -6,6 +6,8 @@ import { fetchPendingAttributionCount } from "@/lib/shifts/queries";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppHeader } from "@/components/app-header";
 import { ShiftAttributionBanner } from "@/components/shift-attribution-banner";
+import { OfflineShellProvider } from "@/components/offline-status";
+import { SwUpdatePrompt } from "@/components/sw-update-prompt";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -31,23 +33,32 @@ export default async function ShellLayout({
   const pendingAttributionCount =
     staff.role === "admin" ? await fetchPendingAttributionCount() : 0;
 
+  const canOperate = counter;
+
   return (
     <TooltipProvider>
       <SidebarProvider>
-        <AppSidebar
-          staff={staff}
+        <OfflineShellProvider
+          staffId={staff.id}
           isCounter={counter}
-          pendingAttributionCount={pendingAttributionCount}
-        />
-        <SidebarInset>
-          <AppHeader pendingAttributionCount={pendingAttributionCount} />
-          <main className="flex-1 p-4 md:p-6">
-            {counter && shiftOpenResult && (
-              <ShiftAttributionBanner initialState={shiftOpenResult} />
-            )}
-            {children}
-          </main>
-        </SidebarInset>
+          canOperate={canOperate}
+        >
+          <AppSidebar
+            staff={staff}
+            isCounter={counter}
+            pendingAttributionCount={pendingAttributionCount}
+          />
+          <SidebarInset>
+            <AppHeader pendingAttributionCount={pendingAttributionCount} />
+            <main className="flex-1 p-4 md:p-6">
+              {counter && shiftOpenResult && (
+                <ShiftAttributionBanner initialState={shiftOpenResult} />
+              )}
+              {children}
+            </main>
+          </SidebarInset>
+          <SwUpdatePrompt />
+        </OfflineShellProvider>
       </SidebarProvider>
     </TooltipProvider>
   );

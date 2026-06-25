@@ -148,6 +148,7 @@ export async function createMemberCheckin(
   }
 
   const supabase = await getClient();
+  const bizDate = parsed.data.businessDate ?? businessToday();
   const { data, error } = await supabase.rpc("create_checkin", {
     p_member_id: memberId,
     p_key_no: keyNo,
@@ -156,14 +157,15 @@ export async function createMemberCheckin(
     p_trainer_id: withTrainer ? trainerId : null,
     p_is_fitpass: false,
     p_is_group_fitpass: false,
-    p_business_date: businessToday(),
+    p_business_date: bizDate,
     p_allow_expired_override: parsed.data.allowExpiredOverride ?? false,
+    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };
 
   const checkinId = data as string;
-  const today = businessToday();
+  const today = bizDate;
   await linkOrphanPaymentToCheckin(
     supabase,
     memberId,
@@ -197,6 +199,7 @@ export async function createFitpassCheckin(
   }
 
   const supabase = await getClient();
+  const bizDate = parsed.data.businessDate ?? businessToday();
   const { data, error } = await supabase.rpc("create_checkin", {
     p_member_id: null,
     p_key_no: parsed.data.keyNo,
@@ -205,7 +208,8 @@ export async function createFitpassCheckin(
     p_trainer_id: null,
     p_is_fitpass: true,
     p_is_group_fitpass: parsed.data.isGroupFitpass,
-    p_business_date: businessToday(),
+    p_business_date: bizDate,
+    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };
@@ -226,6 +230,7 @@ export async function markLeft(
   }
 
   const supabase = await getClient();
+  const bizDate = parsed.data.businessDate ?? businessToday();
   const { error } = await supabase
     .from("checkin")
     .update({
@@ -234,7 +239,7 @@ export async function markLeft(
       updated_by: guard.staffId,
     })
     .eq("id", parsed.data.checkinId)
-    .eq("business_date", businessToday())
+    .eq("business_date", bizDate)
     .eq("voided", false);
 
   if (error) return { ok: false, error: error.message };
@@ -255,6 +260,7 @@ export async function updateCheckinKey(
   }
 
   const supabase = await getClient();
+  const bizDate = parsed.data.businessDate ?? businessToday();
   const { error } = await supabase
     .from("checkin")
     .update({
@@ -262,7 +268,7 @@ export async function updateCheckinKey(
       updated_by: guard.staffId,
     })
     .eq("id", parsed.data.checkinId)
-    .eq("business_date", businessToday())
+    .eq("business_date", bizDate)
     .eq("voided", false);
 
   if (error) return { ok: false, error: error.message };

@@ -72,7 +72,12 @@ export function DashboardOverview({
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
-          <ArrivalsTable rows={checkins} canOperate={false} occupiedOpenKeys={[]} />
+          <ArrivalsTable
+            rows={checkins}
+            businessDate={businessDate}
+            canOperate={false}
+            occupiedOpenKeys={[]}
+          />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
           <KeysPanel

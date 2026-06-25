@@ -32,9 +32,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  createMemberCheckin,
   getMemberCheckinContext,
 } from "@/app/(app)/(shell)/dashboard/actions";
+import { useOfflineContext } from "@/components/offline-status";
+import { submitMemberCheckin } from "@/lib/offline/submit";
+import { readCache } from "@/lib/offline/db";
+import { getOfflineMemberContextAction } from "@/lib/offline/refresh-cache-action";
 import type {
   CheckinMemberContext,
   StaffOption,
@@ -55,6 +58,8 @@ interface CheckinDialogProps {
   occupiedOpenKeys: number[];
   onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
+  businessDate: string;
+  onSubmitted?: () => void;
 }
 
 export function CheckinDialog({
@@ -66,6 +71,8 @@ export function CheckinDialog({
   occupiedOpenKeys,
   onPayMembership,
   paymentRefreshKey = 0,
+  businessDate,
+  onSubmitted,
 }: CheckinDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -80,6 +87,8 @@ export function CheckinDialog({
             occupiedOpenKeys={occupiedOpenKeys}
             onPayMembership={onPayMembership}
             paymentRefreshKey={paymentRefreshKey}
+            businessDate={businessDate}
+            onSubmitted={onSubmitted}
           />
         ) : (
           <DialogHeader>
@@ -99,6 +108,8 @@ interface CheckinDialogFormProps {
   occupiedOpenKeys: number[];
   onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
+  businessDate: string;
+  onSubmitted?: () => void;
 }
 
 function CheckinDialogForm({
@@ -109,8 +120,11 @@ function CheckinDialogForm({
   occupiedOpenKeys,
   onPayMembership,
   paymentRefreshKey = 0,
+  businessDate,
+  onSubmitted,
 }: CheckinDialogFormProps) {
   const router = useRouter();
+  const { online, staffId, enabled } = useOfflineContext();
   const [ctx, setCtx] = React.useState<CheckinMemberContext | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [keyNo, setKeyNo] = React.useState<number | null>(null);
@@ -126,26 +140,39 @@ function CheckinDialogForm({
 
   React.useEffect(() => {
     let cancelled = false;
-    getMemberCheckinContext(memberId)
-      .then((data) => {
+
+    async function load() {
+      try {
+        let data: CheckinMemberContext | null = null;
+        if (enabled && !online) {
+          data =
+            (await readCache<CheckinMemberContext>(`memberCtx:${memberId}`)) ??
+            (await getOfflineMemberContextAction(memberId));
+          if (data) {
+            const { writeCache } = await import("@/lib/offline/db");
+            await writeCache(`memberCtx:${memberId}`, data);
+          }
+        } else {
+          data = await getMemberCheckinContext(memberId);
+        }
         if (cancelled) return;
         setCtx(data);
-        // Comment popup fires on open (once per member), independent of submit.
         if (!commentShownRef.current && data?.comment?.trim()) {
           commentShownRef.current = true;
           setCommentAckOpen(true);
         }
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) toast.error("Greška pri učitavanju člana.");
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void load();
     return () => {
       cancelled = true;
     };
-  }, [memberId, paymentRefreshKey]);
+  }, [memberId, paymentRefreshKey, enabled, online]);
 
   const allKeysTaken = occupiedOpenKeys.length >= KEY_COUNT;
   // No active trainer-based membership → worker picks the trainer category (S0/S3).
@@ -242,7 +269,7 @@ function CheckinDialogForm({
 
     setPending(true);
     try {
-      const res = await createMemberCheckin({
+      const res = await submitMemberCheckin(online, staffId, {
         memberId,
         keyNo: noKey ? null : keyNo,
         withTrainer,
@@ -253,22 +280,30 @@ function CheckinDialogForm({
           : null,
         trainerId: withTrainer ? trainerId : null,
         allowExpiredOverride,
+        businessDate,
       });
+
+      if ("offline" in res && res.offline) {
+        toast.success("Dolazak sačuvan lokalno — čeka sync.");
+        onSubmitted?.();
+        onOpenChange(false);
+        return;
+      }
 
       if (!res.ok) {
         toast.error(res.error);
         return;
       }
 
-      if (res.reserved) {
+      if ("reserved" in res && res.reserved) {
         toast.warning(
           "Sesija je rezervisana (dužan termin) — naplatiti pri sledećoj uplati.",
         );
-      } else if (res.sessionDeducted) {
+      } else if ("sessionDeducted" in res && res.sessionDeducted) {
         toast.success(
           `Dolazak zabeležen. Skinuta 1 sesija (preostalo ${res.sessionsLeft}).`,
         );
-        if (res.isLastSession) {
+        if ("isLastSession" in res && res.isLastSession) {
           toast.info(
             "Iskorišćena poslednja sesija — vreme za obnovu članarine.",
           );

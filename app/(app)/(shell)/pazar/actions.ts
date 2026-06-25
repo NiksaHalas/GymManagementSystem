@@ -71,7 +71,7 @@ export async function recordPayment(
 
   const hadActive = ctx.hasActiveMembership;
   const supabase = await getClient();
-  const today = businessToday();
+  const today = parsed.data.businessDate ?? businessToday();
   const resolvedCheckinId = await resolveCheckinIdForPayment(
     supabase,
     parsed.data.memberId,
@@ -89,6 +89,7 @@ export async function recordPayment(
     p_settle_reserved_ids: parsed.data.settleReservedIds,
     p_checkin_id: resolvedCheckinId,
     p_business_date: today,
+    p_id: parsed.data.id ?? null,
   });
 
   if (error) return { ok: false, error: error.message };

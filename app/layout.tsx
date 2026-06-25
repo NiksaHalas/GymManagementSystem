@@ -19,6 +19,17 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Teretana — Sistem upravljanja",
   description: "Interni sistem za upravljanje teretanom",
+  applicationName: "Teretana",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Teretana",
+  },
+};
+
+export const viewport = {
+  themeColor: "#18181b",
 };
 
 export default function RootLayout({

@@ -35,8 +35,12 @@ import {
 import {
   getPaymentCatalogAction,
   getPaymentContextAction,
-  recordPayment,
 } from "@/app/(app)/(shell)/pazar/actions";
+import { useOfflineContext } from "@/components/offline-status";
+import { submitPayment } from "@/lib/offline/submit";
+import { readCache } from "@/lib/offline/db";
+import { getOfflinePaymentContextAction } from "@/lib/offline/refresh-cache-action";
+import { offeredPriceForType } from "@/lib/pazar/offered-price";
 import { getMemberStatus } from "@/lib/members/status";
 import { formatFullName, formatMemberNo, formatRsd, formatDate } from "@/lib/members/format";
 import type { PaymentCatalog, PaymentContext } from "@/lib/pazar/types";
@@ -49,6 +53,7 @@ interface PaymentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPaid?: () => void;
+  businessDate?: string;
 }
 
 export function PaymentDialog({
@@ -57,6 +62,7 @@ export function PaymentDialog({
   open,
   onOpenChange,
   onPaid,
+  businessDate,
 }: PaymentDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -68,6 +74,7 @@ export function PaymentDialog({
             checkinId={checkinId}
             onOpenChange={onOpenChange}
             onPaid={onPaid}
+            businessDate={businessDate}
           />
         ) : (
           <DialogHeader>
@@ -84,6 +91,7 @@ interface PaymentDialogFormProps {
   checkinId: string | null;
   onOpenChange: (open: boolean) => void;
   onPaid?: () => void;
+  businessDate?: string;
 }
 
 function PaymentDialogForm({
@@ -91,8 +99,10 @@ function PaymentDialogForm({
   checkinId,
   onOpenChange,
   onPaid,
+  businessDate,
 }: PaymentDialogFormProps) {
   const router = useRouter();
+  const { online, staffId, enabled } = useOfflineContext();
   const [ctx, setCtx] = React.useState<PaymentContext | null>(null);
   const [catalog, setCatalog] = React.useState<PaymentCatalog | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -111,15 +121,32 @@ function PaymentDialogForm({
 
     async function load() {
       try {
-        const [context, cat] = await Promise.all([
-          getPaymentContextAction(memberId),
-          getPaymentCatalogAction(),
-        ]);
-        if (cancelled) return;
-        setCtx(context);
-        setCatalog(cat);
-        if (context) {
-          setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
+        if (enabled && !online) {
+          const cachedCtx = await readCache<PaymentContext>(`paymentCtx:${memberId}`);
+          const context =
+            cachedCtx ?? (await getOfflinePaymentContextAction(memberId));
+          const cat = await readCache<PaymentCatalog>("catalog");
+          if (cancelled) return;
+          if (context) {
+            const { writeCache } = await import("@/lib/offline/db");
+            await writeCache(`paymentCtx:${memberId}`, context);
+          }
+          setCtx(context);
+          setCatalog(cat);
+          if (context) {
+            setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
+          }
+        } else {
+          const [context, cat] = await Promise.all([
+            getPaymentContextAction(memberId),
+            getPaymentCatalogAction(),
+          ]);
+          if (cancelled) return;
+          setCtx(context);
+          setCatalog(cat);
+          if (context) {
+            setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
+          }
         }
       } catch {
         if (!cancelled) toast.error("Greška pri učitavanju podataka.");
@@ -133,7 +160,7 @@ function PaymentDialogForm({
     return () => {
       cancelled = true;
     };
-  }, [memberId]);
+  }, [memberId, enabled, online]);
 
   const selectedCategory: CategoryWithTypes | null =
     catalog?.categories.find((c) => String(c.id) === categoryId) ?? null;
@@ -147,12 +174,29 @@ function PaymentDialogForm({
     categoryCode === "otvoreni" &&
     selectedType?.discount != null;
 
-  const standardPrice = selectedType?.standard?.amount_rsd ?? null;
+  const standardPrice =
+    selectedType && catalog
+      ? offeredPriceForType(
+          catalog,
+          selectedType.id,
+          ctx?.discountFlag ?? false,
+          categoryCode,
+        ).standard
+      : (selectedType?.standard?.amount_rsd ?? null);
+  const offeredFromCatalog =
+    selectedType && catalog
+      ? offeredPriceForType(
+          catalog,
+          selectedType.id,
+          ctx?.discountFlag ?? false,
+          categoryCode,
+        ).offered
+      : null;
   const discountPrice = selectedType?.discount?.amount_rsd ?? null;
   const offeredPrice =
     hasDiscount && !useStandardPrice
-      ? (discountPrice ?? standardPrice)
-      : standardPrice;
+      ? (offeredFromCatalog ?? discountPrice ?? standardPrice)
+      : (offeredFromCatalog ?? standardPrice);
 
   const parsedCustom = customAmount.trim() === "" ? null : parseInt(customAmount, 10);
   const isCustom =
@@ -193,7 +237,7 @@ function PaymentDialogForm({
 
     setPending(true);
     try {
-      const res = await recordPayment({
+      const res = await submitPayment(online, staffId, {
         memberId,
         membershipTypeId: membershipSelected ? parseInt(typeId, 10) : null,
         amountRsd: membershipSelected ? effectiveAmount : 0,
@@ -202,14 +246,22 @@ function PaymentDialogForm({
         startMode: ctx.hasActiveMembership ? "payment" : startMode,
         settleReservedIds: [...selectedDebts],
         checkinId,
+        businessDate,
       });
+
+      if ("offline" in res && res.offline) {
+        toast.success("Uplata sačuvana lokalno — čeka sync.");
+        onOpenChange(false);
+        onPaid?.();
+        return;
+      }
 
       if (!res.ok) {
         toast.error(res.error);
         return;
       }
 
-      if (res.scheduled) {
+      if ("scheduled" in res && res.scheduled) {
         toast.success("Zakazana članarina kreirana.");
       } else {
         toast.success("Uplata je zabeležena.");

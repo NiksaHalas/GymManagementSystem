@@ -9,6 +9,8 @@ import { FitpassDialog } from "@/app/(app)/(shell)/dashboard/fitpass-dialog";
 import { ArrivalsTable } from "@/app/(app)/(shell)/dashboard/arrivals-table";
 import { KeysPanel } from "@/app/(app)/(shell)/dashboard/keys-panel";
 import { PaymentDialog } from "@/components/payment/payment-dialog";
+import { useOfflineContext } from "@/components/offline-status";
+import { mergeOptimisticCheckins } from "@/lib/offline/optimistic";
 import type {
   DashboardCheckinRow,
   KeyHolder,
@@ -46,6 +48,7 @@ export function DashboardCounter({
   reconcileMode = false,
   shifts = [],
 }: DashboardCounterProps) {
+  const { intents, enabled, refreshCounts } = useOfflineContext();
   const [checkinMemberId, setCheckinMemberId] = React.useState<string | null>(null);
   const [checkinOpen, setCheckinOpen] = React.useState(false);
   const [fitpassOpen, setFitpassOpen] = React.useState(false);
@@ -53,6 +56,14 @@ export function DashboardCounter({
   const [paymentCheckinId, setPaymentCheckinId] = React.useState<string | null>(null);
   const [paymentOpen, setPaymentOpen] = React.useState(false);
   const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
+
+  const mergedCheckins = React.useMemo(
+    () =>
+      enabled && canOperate
+        ? mergeOptimisticCheckins(checkins, intents, businessDate)
+        : checkins,
+    [enabled, canOperate, checkins, intents, businessDate],
+  );
 
   function openPayment(memberId: string, checkinId: string | null = null) {
     setPaymentMemberId(memberId);
@@ -73,6 +84,8 @@ export function DashboardCounter({
 
       {canOperate && !reconcileMode && (
         <CheckinSearch
+          businessDate={businessDate}
+          mergedCheckins={mergedCheckins}
           onSelectMember={(id) => {
             setCheckinMemberId(id);
             setCheckinOpen(true);
@@ -85,12 +98,14 @@ export function DashboardCounter({
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
           <ArrivalsTable
-            rows={checkins}
+            rows={mergedCheckins}
+            businessDate={businessDate}
             canOperate={canOperate}
             occupiedOpenKeys={occupiedOpenKeys}
             onPayment={(memberId, checkinId) => openPayment(memberId, checkinId)}
             reconcileMode={reconcileMode}
             shifts={shifts}
+            onLocalChange={() => void refreshCounts()}
           />
         </div>
         <aside className="w-full shrink-0 lg:w-52 xl:w-56">
@@ -115,6 +130,7 @@ export function DashboardCounter({
             staffOptions={staffOptions}
             trainerCategories={trainerCategories}
             occupiedOpenKeys={occupiedOpenKeys}
+            businessDate={businessDate}
             onPayMembership={(checkinId) => {
               const mid = checkinMemberId;
               if (!mid) return;
@@ -123,6 +139,7 @@ export function DashboardCounter({
               openPayment(mid, checkinId);
             }}
             paymentRefreshKey={paymentRefreshKey}
+            onSubmitted={() => void refreshCounts()}
           />
           <PaymentDialog
             memberId={paymentMemberId}
@@ -135,12 +152,18 @@ export function DashboardCounter({
                 setPaymentCheckinId(null);
               }
             }}
-            onPaid={() => setPaymentRefreshKey((k) => k + 1)}
+            businessDate={businessDate}
+            onPaid={() => {
+              setPaymentRefreshKey((k) => k + 1);
+              void refreshCounts();
+            }}
           />
           <FitpassDialog
             open={fitpassOpen}
             onOpenChange={setFitpassOpen}
             occupiedKeys={occupiedOpenKeys}
+            businessDate={businessDate}
+            onSubmitted={() => void refreshCounts()}
           />
         </>
       )}
