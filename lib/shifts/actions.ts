@@ -142,6 +142,32 @@ export async function endShiftAction(): Promise<void> {
 }
 
 /**
+ * Server action: end the current worker's shift AND sign out in one step.
+ * Combined (vs. two client calls) so no layout re-render can auto-reopen a shift
+ * between ending it and signing out. No revalidatePath — we redirect anyway.
+ */
+export async function endShiftAndSignOutAction(): Promise<void> {
+  if (!(await isCounterDevice())) {
+    throw new Error(COUNTER_REQUIRED_MSG);
+  }
+
+  const staff = await getCurrentStaff();
+  if (!staff) redirect("/login");
+
+  const cookieStore = await cookies();
+  const supabase = createClient(cookieStore);
+
+  const { error } = await supabase.rpc("end_shift");
+  if (error) {
+    console.error("[endShiftAndSignOutAction]", error.message);
+    throw new Error("Greška pri završetku smene.");
+  }
+
+  await supabase.auth.signOut();
+  redirect("/login");
+}
+
+/**
  * Server action: switch worker — sign in incoming worker, then handover_shift only.
  */
 const GENERIC_AUTH_ERROR = "Neispravno korisničko ime ili lozinka.";
