@@ -1,7 +1,7 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.23
-Date: 2026-06-23
+Version: 1.24
+Date: 2026-06-25
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
@@ -29,6 +29,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.21 records **open-visit guard (GYM05) + key-number search** (2026-06-22; migration `20260622130000_open_visit_guard`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): (1) **GYM05** — server hard-block when member has open visit today; passive amber hints in `checkin-search.tsx` (badge per row) and `checkin-dialog.tsx` (`hasOpenVisit` / `openVisitKeyNo` from `fetchCheckinMemberContext`); confirm button stays enabled (toast on submit). (2) **Key search** — `keys-panel.tsx` input + `findLastKeyHolder` (`requireUser()`, not counter-only); `fetchLastKeyHolder` / `fetchOpenVisitsForMembers` in `lib/dashboard/queries.ts`. Verification: `scripts/verify_open_visit_guard.sql`. See `DB.md` v1.21 / PRD v1.18.
 > v1.22 records **solo Otvoreni auto session deduction** (2026-06-22; migration `20260622140000_open_solo_session_deduct`, `create or replace` on `create_checkin` — **signature unchanged**, no type regen): solo arrival on active session-based Otvoreni (`training_category.code='otvoreni'`, `is_time_based=false`) decrements `sessions_left` without trainer tick or `session_log`; 0 sessions → check-in without deduction; `createMemberCheckin` refetches context post-RPC for toast state; `checkin-dialog.tsx` passive hints + last-session toast. Verification: `scripts/verify_open_solo_session.sql`. See `DB.md` v1.22 / PRD v1.19.
 > v1.23 records **Phase 2 dashboard closure** (2026-06-23): (1) **Unreturned keys** — `fetchUnreturnedKeys(businessDate)` + keys panel „Nevraćeni ključevi" (count badge, holder/time/worker, `isPastGymClosing` via `lib/dashboard/closing.ts`); (2) **Session override after expiry** — migration `20260623140000`, `p_allow_expired_override` on `create_checkin`; `fetchCheckinMemberContext.expiredPackages`; override confirm in `checkin-dialog.tsx`; authoritative post-RPC `fetchCheckinSubmitResult`; search badge „Istekla — preostalo {n} sesija". Verification: `scripts/verify_session_override.sql`. See `PRD.md` v1.20 / `DB.md` v1.23.
+> v1.24 records **Phase 3 — PWA + offline + USB backup** (2026-06-25): `@serwist/next` + `serwist` + `idb`; `lib/offline/` (IndexedDB cache/outbox, main-thread `sync.ts`, `useOfflineSync`, submit wrappers); counter-only offline check-in/payment with optimistic UI + chronological drain via existing server actions; migration `20260625120000` adds **`p_id`** idempotency on `create_checkin` / `record_payment`; kill switch **`NEXT_PUBLIC_OFFLINE_ENABLED`**; `GET /api/health`; `scripts/backup-usb.mjs`; verification `scripts/verify_offline_idempotency.sql`. Repo: **40** migrations. See `PRD.md` v1.21 / `DB.md` v1.24.
 
 ---
 
@@ -76,12 +77,11 @@ Already wired in the repo:
 ### 1.2 Installed UI & libraries
 - shadcn primitives: `input`, `label`, `form`, `card`, `sonner`, `alert-dialog`, `dialog`, `dropdown-menu`, `table`, `badge`, `switch`, `separator`, `select`, `textarea`, `sidebar`, `sheet`, `tooltip`, `skeleton`, **`command`**, **`popover`**, **`checkbox`**, **`tabs`**, `input-group` (dashboard search + Fitpass/check-in dialogs; cene tabs).
 - **Zod**, **react-hook-form**, **@hookform/resolvers** — auth and member forms.
-- **`@tanstack/react-query`** — not yet installed; dashboard v1 uses `router.refresh()` + server actions (same pattern as `clanovi`).
+- **`@serwist/next`**, **`serwist`**, **`idb`** — PWA service worker + IndexedDB offline layer (Phase 3; see §6).
+- **`@playwright/test`** — optional e2e (`e2e/offline-checkin.spec.ts`; set `PLAYWRIGHT_E2E=1`).
 
-### 1.3 Still to add
-- `@tanstack/react-query` (optional until offline/optimistic check-in in Phase 3).
-- PWA layer: service worker + IndexedDB offline queue (see §6).
-- Companion backup script (Node) — see §8.
+### 1.3 Optional / not used
+- **`@tanstack/react-query`** — not installed; dashboard uses `router.refresh()` + server actions.
 
 > **UI rule:** always use shadcn/ui primitives from `@/components/ui/*`, pulled/verified via the shadcn MCP, before writing custom UI. Keep styling in Tailwind and reuse shadcn variants.
 
@@ -177,19 +177,20 @@ lib/
   supabase/
     server-client.ts            # cached getServerSupabase() per RSC request (implemented)
   db/                           # typed queries + generated types (lib/db/types.ts)
-  offline/                      # IndexedDB queue + sync engine (planned — Phase 3; folder not in repo yet)
+  offline/                      # IndexedDB cache + outbox + main-thread sync (implemented — Phase 3)
   time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts — belgradeDayOf, belgradeInstant, weekStartMonday, addDays)
 utils/
   supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
 supabase/
-  migrations/                   # SQL migrations (35 files as of 2026-06-19; see DB.md)
+  migrations/                   # SQL migrations (40 files as of 2026-06-25; see DB.md)
 scripts/
   seed-admins.mjs               # one-time admin seed (implemented)
   push-supabase-auth-config.mjs # optional: push Auth redirect URLs via Management API (needs SUPABASE_ACCESS_TOKEN)
   set-admin-password.mjs        # service-role password rotation (implemented)
   verify_payment_checkin_link.sql # post-migration verification for payment.checkin_id (implemented)
-  backup-usb.mjs                # companion backup script (planned, Phase 3)
+  verify_offline_idempotency.sql # p_id idempotency on create_checkin / record_payment (Phase 3)
+  backup-usb.mjs                # companion USB backup script (Phase 3; schedule via Task Scheduler)
 ```
 
 ### 2.2 Training categories (`training_category`)
@@ -239,9 +240,7 @@ Implemented at `(app)/dashboard` with data helpers in `lib/dashboard/`.
 | `checkin-search` — "Naplati" | `null` | Auto on next `createMemberCheckin`, or auto-resolved if check-in already exists |
 | Member card — `MemberPayButton` | `null` | Auto-resolved if same-day check-in exists; else orphan until check-in |
 
-**UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, **expired-with-sessions badge**, quick-create member via `CreateMemberDialog.onCreated`), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; **expired-session override confirm**; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3), `fitpass-dialog`, `arrivals-table`, `keys-panel` (today occupancy + key-number history search + **unreturned-keys report**, v1.23), `date-nav`, `soon-expire-badge`.
-
-**Deferred from dashboard v1** (see `PRD.md` §9): offline queue.
+**UI pieces**: `checkin-search` (shadcn `command`/`popover`, open-visit badge per row, **expired-with-sessions badge**, quick-create member via `CreateMemberDialog.onCreated`; online-only when offline), `checkin-dialog` (closes on successful confirm; key, trainer tick offered to all members; fixed category for an active trainer-based package, otherwise a server-filtered manual category select with a „Poslednji put" hint; trainer select; comment popup on open; **expired-session override confirm**; S3 confirm; paused + open-visit warnings; reserved-session warn ≥3; **offline outbox via `lib/offline/submit.ts`**), `fitpass-dialog`, `arrivals-table` (optimistic **„čeka sync"** rows), `keys-panel` (today occupancy + key-number history search + **unreturned-keys report**, v1.23), `date-nav`, `soon-expire-badge`, `components/offline-status.tsx` (connectivity + pending queue sheet).
 
 ### 2.4 Pazar (daily takings & cash payment)
 Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `components/payment/payment-dialog.tsx`.
@@ -343,28 +342,30 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 
 ---
 
-## 6. Offline-first (PWA)
+## 6. Offline-first (PWA) *(implemented — Phase 3)*
 
-Mandatory offline operations: **check-in** and **payment**. Member creation/edits may wait for connectivity.
+Mandatory offline operations: **check-in** and **payment** on the counter device. Member creation/edits wait for connectivity. Gated by **`NEXT_PUBLIC_OFFLINE_ENABLED`** (default `false`).
 
-### 6.1 Service worker
-- Installable PWA via a web app manifest + service worker (`@serwist/next` or `next-pwa`).
-- The service worker pre-caches the app shell and static assets so the UI loads with no network.
-- **Browser support**: Chrome/Edge get full installable-PWA behavior; **Firefox** runs the same app in-browser with working service-worker offline caching, but is **not installable as a standalone app window** — acceptable per product decision.
+### 6.1 Layer split
+- **Service worker** (`app/sw.ts`, `@serwist/next`): precaches app shell + static assets only (`CacheFirst` static, `NetworkFirst` navigations via `defaultCache`). Does **not** cache member/data payloads.
+- **IndexedDB** (`lib/offline/db.ts`, `idb`): `cache` store (catalog, members snapshot, day check-ins, staff, trainer categories, per-member ctx) + `outbox` store (intents). Refreshed online via `refreshOfflineCacheAction()` → client `refreshOfflineCache()`.
+- **Main-thread sync** (`lib/offline/sync.ts`, `use-offline-sync.ts`): drains outbox chronologically by calling existing server actions; **not** a SW Background Sync worker.
 
-### 6.2 Offline write queue
-- Check-in and payment writes are written **first to IndexedDB** (an append-only outbox) and reflected immediately in the UI (optimistic), then flushed to the server.
-- Records use **client-generated UUIDs (UUIDv7)** as primary keys so offline rows have stable IDs and never collide on sync (see `DB.md` §PK strategy). This makes sync **idempotent** (upsert by id).
-- The **business day** is derived from the device clock in **Europe/Belgrade** at creation time and stored on the row, so a check-in created offline lands on the correct day after sync.
+### 6.2 Outbox & idempotency
+- Client UUIDv7 intent ids forwarded as **`p_id`** to `create_checkin` / `record_payment` (migration `20260625120000`); re-sync skips all side effects when id exists.
+- `businessDate` captured on enqueue (Belgrade) and passed through on drain (cross-midnight safe).
+- Handover guard: drain blocked when authenticated worker ≠ intent `staffId`.
+- Partial failure: rejected intent marked `failed`; others continue. Local undo via `removePending` (cascades dependent intents).
 
-### 6.3 Sync engine
-- On reconnect (and periodically while online), a sync worker drains the IndexedDB outbox to a sync endpoint / server actions, upserting by `id`.
-- **Member numbers**: a member created offline gets a temporary `pending` display number; on sync the server assigns the next real `member_no` via a Postgres sequence/trigger (in sync order). The permanent number is then reflected on the card.
-- **Conflicts**: writes are mostly additive (new check-ins/payments), minimizing conflicts. For edits, last-write-wins by `updated_at` with the audit trail preserved; same-day-only edit rules for Users are enforced server-side via RLS.
+### 6.3 Connectivity UX
+- Header: online/offline indicator + **Na čekanju (n)** sheet (`components/offline-status.tsx`).
+- Sidebar footer: connectivity dot.
+- SW update prompt when outbox empty (`components/sw-update-prompt.tsx`).
+- **Browser support**: Chrome/Edge installable PWA; Firefox in-browser offline (not installable standalone).
 
-### 6.4 Connectivity UX
-- A clear online/offline indicator and a "pending sync (n)" badge.
-- Operations outside the offline scope (member create/edit, price changes, account management) are disabled or deferred with a message while offline.
+### 6.4 Scope limits (v1)
+- Offline member create/edit, void, price/account changes: online-only.
+- No cross-worker outbox reconcile UI — queue waits for original worker login.
 
 ---
 
@@ -388,19 +389,18 @@ Mandatory offline operations: **check-in** and **payment**. Member creation/edit
 | Reports export (Admin) | **(implemented)** `GET /api/admin/pazar/export` → CSV; `GET /api/admin/smene/export` → shift-history CSV |
 | Prices admin | **(implemented)** `(app)/cene`: tabbed by `training_category`, inline price edit (Admin), add/deactivate types & categories; read-only for workers. Server actions in `cene/actions.ts`; view-models in `lib/catalog/` |
 | Shifts | **(implemented)** §5 — runtime (open/handover/end, auto-close, reconcile) + **Admin history UI** at `/smene` (weekly view, worker filter, coverage gaps, CSV export) |
+| Offline PWA (check-in + payment) | **(implemented)** `lib/offline/`, `@serwist/next`, IndexedDB outbox, optimistic dashboard UI, `p_id` RPC idempotency; kill switch `NEXT_PUBLIC_OFFLINE_ENABLED` |
+| USB backup | **(implemented)** `scripts/backup-usb.mjs` — `pg_dump` or JSON export; schedule 3×/day on counter PC |
 | Notifications | In-app only via toasts/badges (`sonner`); no email/SMS to members |
 
 ---
 
-## 8. Backup to USB *(planned — Phase 3; not yet implemented)*
+## 8. Backup to USB *(implemented — Phase 3)*
 
-Target: a **companion Node script** (`scripts/backup-usb.mjs`, **not yet in the repo**) on the counter computer, scheduled via **Windows Task Scheduler** **3× per day**.
-- It produces a **full database dump** and writes it to the mounted USB path. Two viable approaches:
-  - `pg_dump` against the Supabase Postgres connection string (richest, restorable SQL), or
-  - a Supabase **service-role** client that exports all tables to JSON/CSV when `pg_dump` isn't available on the machine.
-- Files are timestamped and rotated; Supabase cloud remains the primary durable copy.
-- The script uses a **service-role key** kept **only on the local machine** (never shipped to the browser).
-- Dataset is small (~1,000 members) so dumps are quick.
+Companion Node script **`scripts/backup-usb.mjs`** on the counter computer, scheduled via **Windows Task Scheduler** (recommended 3× per day):
+- `pg_dump` when `DATABASE_URL` is set, otherwise Supabase **service-role** JSON export of core tables.
+- Writes timestamped dumps under `<usb-path>/gym-backup/`; keeps last **7** runs.
+- Uses **`SUPABASE_SERVICE_ROLE_KEY`** locally only (never in the browser). Optional `GYM_USB_BACKUP_PATH` env default.
 
 ---
 
