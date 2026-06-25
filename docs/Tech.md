@@ -372,6 +372,8 @@ Companion Node script **`scripts/backup-usb.mjs`** on the counter computer, sche
 - `pg_dump` when `DATABASE_URL` is set, otherwise Supabase **service-role** JSON export of core tables.
 - Writes timestamped dumps under `<usb-path>/gym-backup/`; keeps last **7** runs.
 - Uses **`SUPABASE_SERVICE_ROLE_KEY`** locally only (never in the browser). Optional `GYM_USB_BACKUP_PATH` env default.
+- On a successful run the script logs the result size (`Backup size: …`) before `Backup complete:`, for quick visual confirmation / Task Scheduler "Last Run Result".
+- Step-by-step counter-PC setup (env vars, three 09:00/15:00/21:00 tasks, verification): see **`backup-setup.md`**.
 
 ---
 
@@ -399,6 +401,8 @@ Companion Node script **`scripts/backup-usb.mjs`** on the counter computer, sche
 3. Set production env on Vercel: `NEXT_PUBLIC_*`, `SUPABASE_SERVICE_ROLE_KEY`, `COUNTER_DEVICE_SECRET`, `RESEND_*`, optional `SHIFT_ATTRIBUTION_LAUNCH_AT`. ⚠️ **`NEXT_PUBLIC_*` vars must NOT be marked "Sensitive"** on Vercel — Sensitive withholds them from the build step, so Next.js inlines them as `undefined` and the app 500s (see incidents). Keep only true server secrets Sensitive.
 4. **Auth config push — MANDATORY** on any deploy that changes `NEXT_PUBLIC_SITE_URL` or auth settings (and safe to re-run every deploy; it is idempotent): export `SUPABASE_ACCESS_TOKEN` (Dashboard → Access Tokens or `supabase login`) and run with the **production** URL inline, never from dev `.env.local`: `NEXT_PUBLIC_SITE_URL=https://<prod> npm run auth:push-config`. The script sets `mailer_otp_exp=3600` (so the **"Link važi 1 sat"** promise in the reset email stays true), `disable_signup=true`, `password_min_length=8`, and merges the `/auth/callback` + `/reset` redirect URLs. It **refuses a localhost `site_url`** unless `--allow-localhost` is passed. Skipping this step (or leaving OTP at the Supabase default) silently makes the reset email's 1-hour claim wrong — it is not optional.
 5. Smoke-test: login, password reset (`/auth/callback` → `/reset`), counter shift open/foreign/takeover, switch worker, admin reconcile badge.
+
+> **Operational go-live** (env checklist, accounts/recovery, counter-device registration, full pre-launch smoke test): see **`go-live.md`** + **`smoke-test.md`**.
 
 #### Smoke test checklist (Phase 0 shift attribution) — ✅ verified live 2026-06-18
 

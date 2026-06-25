@@ -1,8 +1,8 @@
 # PRD — Gym Management System
 
-Version: 1.23
+Version: 1.24
 Date: 2026-06-25
-Status: Approved for development; **Phase 0 live in production** (2026-06-18)
+Status: Approved for development; **Phase 0 live in production** (2026-06-18); **go-live verified** (2026-06-25)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
@@ -25,6 +25,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.21 records **Phase 3 — PWA + offline check-in/payment + USB backup** (2026-06-25): installable PWA shell (Serwist), IndexedDB cache + outbox, optimistic check-in/payment while offline, main-thread sync drain with `p_id` idempotency, connectivity UX, `NEXT_PUBLIC_OFFLINE_ENABLED` kill switch, `scripts/backup-usb.mjs`. Offline member create deferred. See `Tech.md` v1.24 / `DB.md` v1.24.
 > v1.22 records **Phase 3 rollback — online-only counter** (2026-06-25): product decision to **cancel offline/PWA**; the counter requires internet for check-in and payment. Reliability = **Supabase (primary cloud)** + **USB backup 3×/day** (`scripts/backup-usb.mjs`, Windows Task Scheduler). Additional cloud backup (Supabase scheduled backups / ops plan) is **not implemented in app code**. Removed: PWA, service worker, IndexedDB outbox, offline connectivity UI. See `Tech.md` v1.25 / `DB.md` v1.25.
 > v1.23 records **Phase 3 DB rollback — revert offline idempotency** (2026-06-25): Supabase RPCs `create_checkin` / `record_payment` no longer accept client-supplied ids (`p_id` removed). Historical migration `20260625120000` remains in ledger; forward migration `20260625160000` restores pre-offline signatures. No product behaviour change for online-only counter. See `Tech.md` v1.26 / `DB.md` v1.26.
+> v1.24 records **go-live verified on production** (2026-06-25): migrations 41/41 in sync, Vercel env confirmed (`NEXT_PUBLIC_*` Plain), full pre-launch smoke test passed, and USB backup verified on the counter PC (`scripts/backup-usb.mjs`, JSON fallback, size logging). Operational runbook + checklists added: `go-live.md`, `smoke-test.md`, `backup-setup.md` (§9.1).
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -330,7 +331,7 @@ Rules:
 
 ## 9. Implementation status (as of 2026-06-25)
 
-This section tracks delivery against the requirements above (Phase 0–3, online-only). Technical detail lives in `Tech.md` / `DB.md`. Phase 3 added the unreturned-keys report, session override after expiry, pause/resume, the Fitpass +300 surcharge, and the USB backup script; the offline/PWA layer that was briefly added in Phase 3 was **rolled back to online-only** (2026-06-25, see v1.22–v1.23).
+This section tracks delivery against the requirements above (Phase 0–3, online-only). Technical detail lives in `Tech.md` / `DB.md`. Phase 3 added the unreturned-keys report, session override after expiry, pause/resume, the Fitpass +300 surcharge, and the USB backup script; the offline/PWA layer that was briefly added in Phase 3 was **rolled back to online-only** (2026-06-25, see v1.22–v1.23). **Go-live verified on production 2026-06-25** (env, counter registration, smoke test, USB backup) — operational runbook in `go-live.md` / `smoke-test.md` / `backup-setup.md`.
 
 ### 9.1 Done
 | Area | Scope |
