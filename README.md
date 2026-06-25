@@ -1,38 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Gym Management System
 
-## Getting Started
+Counter-desk management app for a gym: members, memberships and prices, daily check-ins,
+payments and takings, shifts/handover, physical keys, and pause/resume — built for a single
+physical counter with an online-only Supabase backend.
 
-First, run the development server:
+## Tech stack
+
+Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · shadcn/ui ·
+Supabase (Postgres + Auth, RLS) · Resend (password-reset email) · Vercel (hosting).
+
+See [docs/Tech.md](docs/Tech.md) for the full architecture.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
+npm run build    # production build
+npm run lint     # eslint
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Environment variables
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Copy `.env.example` and fill in values. Full table and notes in
+[docs/Tech.md](docs/Tech.md) §10.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+> ⚠️ On Vercel, `NEXT_PUBLIC_*` vars must be **Plain, not Sensitive** — Sensitive withholds
+> them from the build and the app 500s. Keep only true server secrets Sensitive.
 
-## Learn More
+## Backup
 
-To learn more about Next.js, take a look at the following resources:
+USB backup runs 3×/day on the counter PC via Windows Task Scheduler
+(`scripts/backup-usb.mjs`). Setup: [docs/backup-setup.md](docs/backup-setup.md).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy & go-live
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Operational runbook (env, accounts, counter registration, smoke test):
+[docs/go-live.md](docs/go-live.md).
 
-## Deploy on Vercel
+## Documentation
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-
-# GymManagementSystem
+- [docs/PRD.md](docs/PRD.md) — product requirements and implementation status.
+- [docs/Tech.md](docs/Tech.md) — architecture and technical implementation.
+- [docs/DB.md](docs/DB.md) — database schema and behavior.
+- [docs/go-live.md](docs/go-live.md) — go-live checklist.
+- [docs/smoke-test.md](docs/smoke-test.md) — pre-launch smoke test.
+- [docs/backup-setup.md](docs/backup-setup.md) — USB backup setup (Windows).
