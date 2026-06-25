@@ -1,4 +1,4 @@
-/** Displays a member number, or a dash placeholder when not yet assigned (offline-pending). */
+/** Displays a member number, or a dash placeholder when not yet assigned. */
 export function formatMemberNo(memberNo: number | null): string {
   return memberNo === null ? "—" : String(memberNo);
 }

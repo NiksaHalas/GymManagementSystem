@@ -6,7 +6,6 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
 import { getPageTitle } from "@/lib/nav";
-import { OfflineStatusHeader } from "@/components/offline-status";
 
 interface AppHeaderProps {
   pendingAttributionCount?: number;
@@ -36,7 +35,6 @@ export function AppHeader({ pendingAttributionCount = 0 }: AppHeaderProps) {
           <span className="hidden sm:inline">Nedodeljene operacije</span>
         </Link>
       )}
-      <OfflineStatusHeader />
       </div>
     </header>
   );

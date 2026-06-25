@@ -55,7 +55,6 @@ import {
   mainNavItems,
 } from "@/lib/nav";
 import type { Staff } from "@/lib/db/types";
-import { OfflineSidebarDot } from "@/components/offline-status";
 
 interface AppSidebarProps {
   staff: Staff;
@@ -231,7 +230,6 @@ export function AppSidebar({
                     <UserCheck className="size-4" />
                     <div className="grid flex-1 text-left text-sm leading-tight">
                       <span className="truncate font-medium">
-                        <OfflineSidebarDot />
                         {staff.username}
                       </span>
                       <span className="truncate text-xs text-muted-foreground">

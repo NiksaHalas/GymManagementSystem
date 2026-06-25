@@ -34,8 +34,7 @@ export function PriceCell({
   const [saving, setSaving] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const offline = typeof navigator !== "undefined" && !navigator.onLine;
-  const canEdit = isAdmin && !disabled && !offline;
+  const canEdit = isAdmin && !disabled;
 
   React.useEffect(() => {
     if (editing) {
@@ -125,13 +124,7 @@ export function PriceCell({
         !canEdit && "cursor-default",
         amount == null && "text-muted-foreground",
       )}
-      title={
-        offline
-          ? "Uređivanje nije dostupno offline."
-          : canEdit
-            ? "Kliknite za izmenu"
-            : undefined
-      }
+      title={canEdit ? "Kliknite za izmenu" : undefined}
     >
       {amount != null ? formatRsd(amount) : "—"}
     </button>

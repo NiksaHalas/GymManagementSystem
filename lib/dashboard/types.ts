@@ -35,8 +35,6 @@ export interface DashboardCheckinRow {
   membershipPaused: boolean;
   shiftId: string | null;
   pendingAttribution: boolean;
-  /** Optimistic row awaiting offline sync */
-  pendingSync?: boolean;
 }
 
 export interface KeyHolder {

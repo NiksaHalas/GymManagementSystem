@@ -35,11 +35,8 @@ import {
 import {
   getPaymentCatalogAction,
   getPaymentContextAction,
+  recordPayment,
 } from "@/app/(app)/(shell)/pazar/actions";
-import { useOfflineContext } from "@/components/offline-status";
-import { submitPayment } from "@/lib/offline/submit";
-import { readCache } from "@/lib/offline/db";
-import { getOfflinePaymentContextAction } from "@/lib/offline/refresh-cache-action";
 import { offeredPriceForType } from "@/lib/pazar/offered-price";
 import { getMemberStatus } from "@/lib/members/status";
 import { formatFullName, formatMemberNo, formatRsd, formatDate } from "@/lib/members/format";
@@ -102,7 +99,6 @@ function PaymentDialogForm({
   businessDate,
 }: PaymentDialogFormProps) {
   const router = useRouter();
-  const { online, staffId, enabled } = useOfflineContext();
   const [ctx, setCtx] = React.useState<PaymentContext | null>(null);
   const [catalog, setCatalog] = React.useState<PaymentCatalog | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -121,32 +117,15 @@ function PaymentDialogForm({
 
     async function load() {
       try {
-        if (enabled && !online) {
-          const cachedCtx = await readCache<PaymentContext>(`paymentCtx:${memberId}`);
-          const context =
-            cachedCtx ?? (await getOfflinePaymentContextAction(memberId));
-          const cat = await readCache<PaymentCatalog>("catalog");
-          if (cancelled) return;
-          if (context) {
-            const { writeCache } = await import("@/lib/offline/db");
-            await writeCache(`paymentCtx:${memberId}`, context);
-          }
-          setCtx(context);
-          setCatalog(cat);
-          if (context) {
-            setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
-          }
-        } else {
-          const [context, cat] = await Promise.all([
-            getPaymentContextAction(memberId),
-            getPaymentCatalogAction(),
-          ]);
-          if (cancelled) return;
-          setCtx(context);
-          setCatalog(cat);
-          if (context) {
-            setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
-          }
+        const [context, cat] = await Promise.all([
+          getPaymentContextAction(memberId),
+          getPaymentCatalogAction(),
+        ]);
+        if (cancelled) return;
+        setCtx(context);
+        setCatalog(cat);
+        if (context) {
+          setSelectedDebts(new Set(context.unsettledDebts.map((d) => d.id)));
         }
       } catch {
         if (!cancelled) toast.error("Greška pri učitavanju podataka.");
@@ -160,7 +139,7 @@ function PaymentDialogForm({
     return () => {
       cancelled = true;
     };
-  }, [memberId, enabled, online]);
+  }, [memberId]);
 
   const selectedCategory: CategoryWithTypes | null =
     catalog?.categories.find((c) => String(c.id) === categoryId) ?? null;
@@ -237,7 +216,7 @@ function PaymentDialogForm({
 
     setPending(true);
     try {
-      const res = await submitPayment(online, staffId, {
+      const res = await recordPayment({
         memberId,
         membershipTypeId: membershipSelected ? parseInt(typeId, 10) : null,
         amountRsd: membershipSelected ? effectiveAmount : 0,
@@ -248,13 +227,6 @@ function PaymentDialogForm({
         checkinId,
         businessDate,
       });
-
-      if ("offline" in res && res.offline) {
-        toast.success("Uplata sačuvana lokalno — čeka sync.");
-        onOpenChange(false);
-        onPaid?.();
-        return;
-      }
 
       if (!res.ok) {
         toast.error(res.error);

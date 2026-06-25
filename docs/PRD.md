@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.21
+Version: 1.22
 Date: 2026-06-25
 Status: Approved for development; **Phase 0 live in production** (2026-06-18)
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -23,6 +23,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.19 records **solo auto session deduction for session-based Otvoreni packages** (2026-06-22): solo arrival on active Otvoreni 8/1, 12/1, or 1/1 decrements `sessions_left` without trainer tick; 0 sessions allows check-in without deduction; passive UI hints + last-session toast; time-based Otvoreni 30/1 and Kardio unchanged. See `Tech.md` v1.22 / `DB.md` v1.22.
 > v1.20 records **Phase 2 dashboard closure** (2026-06-23): **end-of-day unreturned-keys report** (§3.7) — „Nevraćeni ključevi" section in keys panel with count badge, holder/time/worker per key, closing-time emphasis; **session override after expiry** (§3.4) — worker confirm to burn remaining sessions on expired session-based packages (solo Otvoreni + trainer, same category); search badge „Istekla — preostalo {n} sesija". Supersedes v1.11 accepted edge (silent deduct on `aktivna`+past `end_date`). See `Tech.md` v1.23 / `DB.md` v1.23.
 > v1.21 records **Phase 3 — PWA + offline check-in/payment + USB backup** (2026-06-25): installable PWA shell (Serwist), IndexedDB cache + outbox, optimistic check-in/payment while offline, main-thread sync drain with `p_id` idempotency, connectivity UX, `NEXT_PUBLIC_OFFLINE_ENABLED` kill switch, `scripts/backup-usb.mjs`. Offline member create deferred. See `Tech.md` v1.24 / `DB.md` v1.24.
+> v1.22 records **Phase 3 rollback — online-only counter** (2026-06-25): product decision to **cancel offline/PWA**; the counter requires internet for check-in and payment. Reliability = **Supabase (primary cloud)** + **USB backup 3×/day** (`scripts/backup-usb.mjs`, Windows Task Scheduler). Additional cloud backup (Supabase scheduled backups / ops plan) is **not implemented in app code**. Removed: PWA, service worker, IndexedDB outbox, offline connectivity UI. DB migration `p_id` idempotency **retained** (optional RPC param). See `Tech.md` v1.25 / `DB.md` v1.25.
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -30,7 +31,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 
 ## 1. Overview
 
-An internal web application for running a single gym (family business) that replaces paper records. Front-desk workers record member arrivals, hand out lockers/keys, take cash payments, and manage memberships. The system must be **fast for one counter** and **resilient to short internet outages**.
+An internal web application for running a single gym (family business) that replaces paper records. Front-desk workers record member arrivals, hand out lockers/keys, take cash payments, and manage memberships. The system must be **fast for one counter** and **requires internet connectivity** at the counter device.
 
 ### 1.1 Goals
 - Fast daily check-in of members (first name, last name, member number, key, membership status).
@@ -39,7 +40,7 @@ An internal web application for running a single gym (family business) that repl
 - Easy creation of members and management of memberships (multiple types and price lists).
 - Visibility of expired and soon-to-expire memberships.
 - Worker shift tracking for accountability.
-- Continued operation during short internet outages (offline-first for check-in and payment).
+- Data reliability via cloud (Supabase) plus scheduled local USB backup (see §3.15).
 
 ### 1.2 Key product constraints
 - Single gym, single counter device (plus the Admin viewing remotely — see §2).
@@ -202,15 +203,13 @@ Rules:
 ### 3.13 Expiry notifications
 - **Visual only** in v1: red "istekla članarina" on the dashboard + a **"soon to expire"** list for members whose membership expires in **≤ 3 days**.
 
-### 3.14 Offline operation
-- Internet is mostly stable but occasionally drops.
-- Must work offline: **daily check-in** and **payment**.
-- On reconnection, data **synchronizes** automatically.
-- Creating new members / edits may **wait for connectivity** (outside the mandatory offline scope). A member created offline gets a **temporary "pending" number** and is assigned the next real member number on sync (in sync order).
+### 3.14 Connectivity
+- The counter device **must have internet** for check-in, payment, and all operational writes.
+- If connectivity is lost, workers wait for reconnection — there is no offline queue in the app.
 
 ### 3.15 Backup
-- **Automatic export to a local USB drive 3× per day** (the counter computer must be on).
-- Data also stays in the cloud (an additional safety layer).
+- **Automatic export to a local USB drive 3× per day** (the counter computer must be on) via `scripts/backup-usb.mjs` and Windows Task Scheduler.
+- Primary data lives in **Supabase** (cloud). A separate **cloud backup** strategy (Supabase dashboard backups / scheduled exports) is an **operational plan**, not implemented in application code.
 - The dataset is small (up to ~1,000 members), so exports are fast.
 
 ### 3.16 Reports export
@@ -283,11 +282,11 @@ Rules:
 
 ## 6. Non-functional (product) requirements
 - **Performance**: check-in should take a couple of seconds; member search fast (up to ~1,000 members).
-- **Reliability/offline**: offline check-in and payment with sync on reconnect; never lose entries.
+- **Reliability**: Supabase as primary store; USB backup 3×/day on the counter PC; no offline operation.
 - **Security**: role separation (User/Admin); only Admins manage accounts and view monthly/yearly takings and shifts.
 - **Audit**: every record carries who entered it; edits to past days are Admin-only.
 - **Localization**: Serbian latinica; currency RSD; time Europe/Belgrade; day resets at midnight.
-- **Device/browser**: optimized for one counter (desktop). Target browsers: **Chrome/Edge (primary, installable app)** and **Firefox (supported in-browser; offline works, not installable as an app)**.
+- **Device/browser**: optimized for one counter (desktop). Target browsers: **Chrome, Edge, Firefox** (standard web app; not installable as PWA).
 
 ---
 
@@ -323,7 +322,7 @@ Rules:
 - Voiding a payment reverts the linked membership change; takings show the net total.
 - Takings: User daily; Admin daily/monthly/yearly; Admin-only export on demand.
 - Notifications visual only; "soon to expire" threshold 3 days.
-- Backup: automatic USB 3× daily + cloud copy.
+- Backup: automatic USB 3× daily (`scripts/backup-usb.mjs`) + Supabase cloud (primary).
 - Phone required and **unique across all members** (incl. archived); duplicates are **blocked with a message**, enforced in the database by normalized digits. _(Supersedes the earlier "family sharing / soft warning" decision — Phase 1a, 2026-06-18.)_
 
 ---
@@ -347,12 +346,13 @@ This section tracks delivery against the requirements above. Technical detail li
 | **Solo Otvoreni session deduction** | Solo arrival on active session-based Otvoreni package (8/1, 12/1, 1/1) auto-decrements `sessions_left`; 0 sessions → check-in allowed without deduction (passive UI hint); last-session toast on 1→0; void restores session; time-based Otvoreni 30/1 and Kardio unchanged (`DB.md` §10.2) |
 | **Unreturned keys (§3.7)** | Keys panel „Nevraćeni ključevi" section: live list of physical keys not returned via „Otišao" for the selected `business_date` (holder, check-in time, worker); destructive count badge; stronger styling after gym close / on past days; workers + remote Admin overview |
 | **Session override after expiry (§3.4)** | Worker confirm to use 1 remaining session on an expired session-based package (solo Otvoreni or trainer, same category); decline → arrival without deduction (trainer → `reserved_session` debt); search badge „Istekla — preostalo {n} sesija"; void restores session (`DB.md` §10.2) |
-| **Offline / PWA (Phase 3)** | PWA shell (`@serwist/next`); IndexedDB cache + outbox (`lib/offline/`); counter-only offline check-in/payment with optimistic UI + chronological sync; idempotent RPCs (`p_id`); kill switch `NEXT_PUBLIC_OFFLINE_ENABLED`; USB backup script (`scripts/backup-usb.mjs`) |
+| **USB backup (Phase 3)** | `scripts/backup-usb.mjs` — `pg_dump` or JSON export; schedule 3×/day on counter PC via Task Scheduler |
+| **Online-only counter (Phase 3 rollback)** | Offline/PWA layer removed (2026-06-25); check-in and payment require internet; direct server actions only |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 These PRD items are **not** in dashboard v1; they remain product requirements for later phases:
 
-*(none — offline moved to §9.1)*
+- Duplicate check-in while member still present (pre-launch polish; see v1.17).
 
-### 9.3 Not started (post-MVP / Phase 2–3)
-- *(USB backup script implemented — schedule via Windows Task Scheduler on the counter PC.)*
+### 9.3 Not started (post-MVP)
+- Cloud backup automation beyond Supabase defaults (operational plan; not in app code).

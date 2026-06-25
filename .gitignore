@@ -16,8 +16,6 @@
 # next.js
 /.next/
 /out/
-/public/sw.js
-/public/swe-worker-*
 
 # production
 /build

@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.24
+Version: 1.25
 Date: 2026-06-25
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -28,7 +28,8 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.21 — **Open-visit guard (GYM05) + key search queries** (2026-06-22). Migration `20260622130000_open_visit_guard` (`create or replace` on `create_checkin`; **signature unchanged**, no type regen): blocks a second **member** check-in on the same `business_date` while a non-voided open visit exists (`key_returned=false`, incl. `key_no IS NULL`); Fitpass bypasses the guard; paused members subject to guard. Custom SQLSTATE **`GYM05`** (readable Serbian, incl. key no or „bez ključa"). App: `fetchOpenVisitsForMembers`, `fetchLastKeyHolder`, UI hints + keys-panel search. Verification: `scripts/verify_open_visit_guard.sql`. Repo: **37** migration files. See `Tech.md` v1.21 / PRD v1.18.
 > v1.22 — **Solo Otvoreni auto session deduction** (2026-06-22). Migration `20260622140000_open_solo_session_deduct` (`create or replace` on `create_checkin`; **signature unchanged**, no type regen): solo arrival on active session-based Otvoreni (`training_category.code='otvoreni'`, `membership_type.is_time_based=false`) with `sessions_left > 0` decrements `sessions_left` and sets `decremented_session=true` without `session_log` or `reserved_session`; 0 sessions → check-in without deduction; paused/time-based/Kardio unchanged. `void_checkin` restore unchanged. Verification: `scripts/verify_open_solo_session.sql`. Repo: **38** migration files. See `Tech.md` v1.22 / PRD v1.19.
 > v1.23 — **Session override after expiry** (2026-06-23). Migration `20260623140000_session_override_after_expiry`: **drop + recreate** `create_checkin` with trailing `p_allow_expired_override boolean default false`; gates normal trainer/solo deduction on `not v_active_expired`; override branch deducts newest expired-by-date session package (same category for trainer; Otvoreni for solo) when flag true — trainer writes `session_log`, solo does not; flips `aktivna`+past → `istekla`; decline → solo no-op / trainer `reserved_session`. `void_checkin` unchanged. Verification: `scripts/verify_session_override.sql`. Repo: **39** migration files. See `Tech.md` v1.23 / PRD v1.20. *(Unreturned-keys report is app-only — no schema change.)*
-> v1.24 — **Offline sync idempotency (`p_id`)** (2026-06-25). Migration `20260625120000_offline_idempotency_p_id`: **drop + recreate** `create_checkin` with trailing `p_id uuid default null`; **drop + recreate** `record_payment` with trailing `p_id uuid default null`. When `p_id` is supplied and a row with that id already exists, the RPC returns the id **without re-running side effects** (no second session deduction, surcharge, membership, or debt settle). Client offline intents use UUIDv7 as `p_id`. Verification: `scripts/verify_offline_idempotency.sql`. Repo: **40** migration files. See `Tech.md` v1.24 / PRD v1.21.
+> v1.24 — **Offline sync idempotency (`p_id`)** (2026-06-25). Migration `20260625120000_offline_idempotency_p_id`: **drop + recreate** `create_checkin` with trailing `p_id uuid default null`; **drop + recreate** `record_payment` with trailing `p_id uuid default null`. When `p_id` is supplied and a row with that id already exists, the RPC returns the id **without re-running side effects** (no second session deduction, surcharge, membership, or debt settle). Repo: **40** migration files. See `Tech.md` v1.24 / PRD v1.21.
+> v1.25 — **Phase 3 rollback — online-only app** (2026-06-25). **No schema change.** Migration `20260625120000` **retained** on remote; `p_id` remains an optional RPC parameter (client sends `null`). §6 shortened: UUID PKs + `business_date` unchanged; offline enqueue/drain narrative removed. See `Tech.md` v1.25 / PRD v1.22.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -37,10 +38,10 @@ This document defines the database schema for the Gym Management System. It foll
 ## 1. Conventions & decisions
 
 - **Identifiers**: lowercase `snake_case`; tables are singular nouns.
-- **Timestamps**: `timestamptz` everywhere (UTC). The **business day** is derived in `Europe/Belgrade` and stored as a `date` (`business_date`) on `checkin`/`payment` so day-grouping survives the midnight reset and offline sync.
+- **Timestamps**: `timestamptz` everywhere (UTC). The **business day** is derived in `Europe/Belgrade` and stored as a `date` (`business_date`) on `checkin`/`payment` so day-grouping survives the midnight reset.
 - **Primary keys**:
   - **Reference/config tables** (`training_category`, `membership_type`, `price`, `gym_key`): `bigint generated always as identity` (sequential, compact). (`staff` is UUID, 1:1 with `auth.users`.)
-  - **Operational tables that can be created offline** (`member`, `membership`, `checkin`, `payment`, `session_log`, `reserved_session`, `shift`): **UUID** primary keys. **Refinement (v1.1):** the server-side column default is **`gen_random_uuid()`** (UUIDv4), because the `pg_uuidv7` extension is **not available on Supabase**. Clients that create rows offline still generate a **client-side UUIDv7** (time-ordered, stable id before sync) and send it as the `id`, so sync stays an idempotent upsert by `id`; only the DB fallback default differs (UUIDv4 instead of v7).
+  - **Operational tables** (`member`, `membership`, `checkin`, `payment`, `session_log`, `reserved_session`, `shift`): **UUID** primary keys with server default **`gen_random_uuid()`** (UUIDv4; `pg_uuidv7` extension not available on Supabase).
 - **Money**: integer RSD (`amount_rsd int`), no decimals.
 - **Soft delete**: `member.archived` (history preserved). Member numbers are never reused.
 - **Audit**: mutable rows carry `created_by` / `updated_by` (→ `staff.id`) and `created_at` / `updated_at`.
@@ -186,11 +187,11 @@ create unique index member_phone_digits_uidx on member ((regexp_replace(phone, '
 create index member_name_idx       on member (lower(last_name), lower(first_name));
 ```
 
-**Member number assignment (offline-safe):**
+**Member number assignment:**
 ```sql
 create sequence member_no_seq;
 
--- Assign the next permanent number when a member is finalized (on server-side sync/insert)
+-- Assign the next permanent number when a member is inserted without member_no
 create or replace function assign_member_no()
 returns trigger language plpgsql
   security definer set search_path = public as $$   -- refinement (v1.1): runs as owner so it can use the sequence regardless of caller role
@@ -205,7 +206,7 @@ create trigger member_assign_no
   before insert on member
   for each row execute function assign_member_no();
 ```
-- Offline-created members are shown with a temporary "pending" number client-side; the real `member_no` is assigned on sync (in sync order). Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
+- `member_no` is **nullable** until assigned server-side via `member_no_seq` on insert. Numbers are never reused because they come from a monotonic sequence and archiving does not free them.
 
 **Restore admin-only (migration `20260618132000`):** `member_restore_admin_guard` → `enforce_member_restore_admin()` — blocks `archived` true→false unless `is_admin()` (`42501`). Archiving and other updates unchanged. Policy detail: §5.1.
 
@@ -647,12 +648,11 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ---
 
-## 6. Notes on offline & sync (DB-side)
-- UUID PKs let the client create `checkin`/`payment` rows offline with final IDs; sync passes the client UUIDv7 as **`p_id`** and the RPC inserts with `coalesce(p_id, gen_random_uuid())` (v1.24).
-- **Idempotency (v1.24):** if `p_id` is not null and a row with that id already exists, `create_checkin` / `record_payment` return the id immediately — **no side effects** (safe for retry / double-drain).
-- `business_date` is set at creation time (device clock, Europe/Belgrade) so offline rows land on the correct day; the app captures `businessDate` on enqueue and forwards it on drain.
-- `member_no` is intentionally **nullable** and assigned server-side via `member_no_seq` so offline members never collide and numbers are never reused. *(Offline member creation is out of scope for v1 — no pending-number flow.)*
-- Mostly-additive writes (new check-ins/payments) keep conflicts rare; edits use last-write-wins by `updated_at`, with same-day-only restrictions for Users enforced by RLS.
+## 6. Notes on IDs & idempotency (DB-side)
+- UUID PKs on operational tables; server generates ids via `gen_random_uuid()` unless the client supplies one.
+- **`business_date`** is set at creation time (Europe/Belgrade) on `checkin`/`payment` rows.
+- **`p_id` (v1.24, migration retained):** optional trailing parameter on `create_checkin` / `record_payment`. When supplied and a row with that id already exists, the RPC returns immediately with **no side effects** (legacy idempotency guard; online app sends `null`).
+- `member_no` is assigned server-side via `member_no_seq` (see §3.3).
 
 ---
 
@@ -765,7 +765,7 @@ Atomically inserts a `checkin` row and applies side effects:
 | `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag inserts immediate `payment` `kind='fitpass_surcharge'` (+300 RSD) |
 | `p_business_date` | Defaults to `business_today()` |
 | `p_allow_expired_override` | (v1.23) When true, allows deducting 1 session from an expired-by-date session-based package (`istekla` or `aktivna`+past `end_date`, `sessions_left > 0`, `is_time_based=false`) if the normal path did not deduct — trainer: same category + `session_log`; solo Otvoreni: no `session_log`. Flips `aktivna`+past → `istekla`. When false, expired paths fall through to no-op (solo) or `reserved_session` (trainer). Time-based expired packages never override. |
-| `p_id` | (v1.24) Optional client UUID for offline sync. When set and a `checkin` row with that id exists, returns immediately with no side effects. Insert uses `coalesce(p_id, gen_random_uuid())`. |
+| `p_id` | (v1.24) Optional client UUID for idempotent retry. When set and a `checkin` row with that id exists, returns immediately with no side effects. Insert uses `coalesce(p_id, gen_random_uuid())`. Online app sends `null`. |
 
 **Side effects** (when applicable) — trainer session is modelled **by training category** (v1.15):
 - **Paused membership** (`status='pauzirana'`, v1.20): record the arrival only — `checkin.membership_id = null`; no session decrement, no `session_log`, no `reserved_session`, no first-visit activation. `with_trainer` / `trainer_id` / `training_category_id` are still written on the check-in row for history.
@@ -811,7 +811,7 @@ Atomically records cash payment(s). Returns the primary payment id (membership p
 | `p_settle_reserved_ids` | UUID[] of unsettled `reserved_session` rows to settle (one `debt_settlement` payment each) |
 | `p_checkin_id` | Written to `payment.checkin_id` on the **membership** payment (v1.17); not on `debt_settlement` (that link lives on `reserved_session`). Supplied explicitly by the UI (arrivals-row "Naplati", check-in dialog after confirm) or **auto-resolved** by the app when `null` — latest same-day check-in for that member without a linked membership payment (`Tech.md` v1.18). Pay-first flow: app UPDATEs orphan payment after `create_checkin`. Does not mutate the check-in; `void_checkin` never auto-voids a membership payment via this FK. |
 | `p_business_date` | Defaults to `business_today()` |
-| `p_id` | (v1.24) Optional client UUID for offline sync. When set and a `payment` row with that id exists, returns immediately with no side effects. Membership payment insert uses `coalesce(p_id, gen_random_uuid())`; debt-settlement rows still get fresh ids. |
+| `p_id` | (v1.24) Optional client UUID for idempotent retry. When set and a `payment` row with that id exists, returns immediately with no side effects. Membership payment insert uses `coalesce(p_id, gen_random_uuid())`; debt-settlement rows still get fresh ids. Online app sends `null`. |
 
 **Side effects**:
 - Membership payment + no active/paused membership → insert `membership` `status='aktivna'`.

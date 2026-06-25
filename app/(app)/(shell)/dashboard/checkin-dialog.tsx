@@ -32,12 +32,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  createMemberCheckin,
   getMemberCheckinContext,
 } from "@/app/(app)/(shell)/dashboard/actions";
-import { useOfflineContext } from "@/components/offline-status";
-import { submitMemberCheckin } from "@/lib/offline/submit";
-import { readCache } from "@/lib/offline/db";
-import { getOfflineMemberContextAction } from "@/lib/offline/refresh-cache-action";
 import type {
   CheckinMemberContext,
   StaffOption,
@@ -59,7 +56,6 @@ interface CheckinDialogProps {
   onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
   businessDate: string;
-  onSubmitted?: () => void;
 }
 
 export function CheckinDialog({
@@ -72,7 +68,6 @@ export function CheckinDialog({
   onPayMembership,
   paymentRefreshKey = 0,
   businessDate,
-  onSubmitted,
 }: CheckinDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -88,7 +83,6 @@ export function CheckinDialog({
             onPayMembership={onPayMembership}
             paymentRefreshKey={paymentRefreshKey}
             businessDate={businessDate}
-            onSubmitted={onSubmitted}
           />
         ) : (
           <DialogHeader>
@@ -109,7 +103,6 @@ interface CheckinDialogFormProps {
   onPayMembership?: (checkinId: string | null) => void;
   paymentRefreshKey?: number;
   businessDate: string;
-  onSubmitted?: () => void;
 }
 
 function CheckinDialogForm({
@@ -121,10 +114,8 @@ function CheckinDialogForm({
   onPayMembership,
   paymentRefreshKey = 0,
   businessDate,
-  onSubmitted,
 }: CheckinDialogFormProps) {
   const router = useRouter();
-  const { online, staffId, enabled } = useOfflineContext();
   const [ctx, setCtx] = React.useState<CheckinMemberContext | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [keyNo, setKeyNo] = React.useState<number | null>(null);
@@ -143,18 +134,7 @@ function CheckinDialogForm({
 
     async function load() {
       try {
-        let data: CheckinMemberContext | null = null;
-        if (enabled && !online) {
-          data =
-            (await readCache<CheckinMemberContext>(`memberCtx:${memberId}`)) ??
-            (await getOfflineMemberContextAction(memberId));
-          if (data) {
-            const { writeCache } = await import("@/lib/offline/db");
-            await writeCache(`memberCtx:${memberId}`, data);
-          }
-        } else {
-          data = await getMemberCheckinContext(memberId);
-        }
+        const data = await getMemberCheckinContext(memberId);
         if (cancelled) return;
         setCtx(data);
         if (!commentShownRef.current && data?.comment?.trim()) {
@@ -172,7 +152,7 @@ function CheckinDialogForm({
     return () => {
       cancelled = true;
     };
-  }, [memberId, paymentRefreshKey, enabled, online]);
+  }, [memberId, paymentRefreshKey]);
 
   const allKeysTaken = occupiedOpenKeys.length >= KEY_COUNT;
   // No active trainer-based membership → worker picks the trainer category (S0/S3).
@@ -269,7 +249,7 @@ function CheckinDialogForm({
 
     setPending(true);
     try {
-      const res = await submitMemberCheckin(online, staffId, {
+      const res = await createMemberCheckin({
         memberId,
         keyNo: noKey ? null : keyNo,
         withTrainer,
@@ -282,13 +262,6 @@ function CheckinDialogForm({
         allowExpiredOverride,
         businessDate,
       });
-
-      if ("offline" in res && res.offline) {
-        toast.success("Dolazak sačuvan lokalno — čeka sync.");
-        onSubmitted?.();
-        onOpenChange(false);
-        return;
-      }
 
       if (!res.ok) {
         toast.error(res.error);

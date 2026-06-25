@@ -10,20 +10,13 @@ const PUBLIC_PATHS = [
   "/zaboravljena-lozinka",
   "/reset",
   "/auth/callback",
-  "/api/health",
-  "/manifest.json",
-  "/sw.js",
 ];
 
 /** Auth pages for guests only — logged-in users are sent to the app. */
 const GUEST_ONLY_AUTH_PATHS = ["/login", "/zaboravljena-lozinka"];
 
 function isPublicPath(pathname: string): boolean {
-  if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
-    return true;
-  }
-  if (pathname.startsWith("/icons/")) return true;
-  return false;
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
 function isGuestOnlyAuthPath(pathname: string): boolean {

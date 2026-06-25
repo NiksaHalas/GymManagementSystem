@@ -38,13 +38,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { voidCheckin } from "@/app/(app)/(shell)/dashboard/actions";
-import { useOfflineContext } from "@/components/offline-status";
 import {
-  submitMarkLeft,
-  submitUpdateCheckinKey,
-} from "@/lib/offline/submit";
-import { enqueue, updatePendingCheckinKey } from "@/lib/offline/outbox";
+  markLeft,
+  updateCheckinKey,
+  voidCheckin,
+} from "@/app/(app)/(shell)/dashboard/actions";
 import {
   formatCheckinDisplayName,
   formatPaymentBadge,
@@ -64,7 +62,6 @@ interface ArrivalsTableProps {
   onPayment?: (memberId: string, checkinId: string) => void;
   reconcileMode?: boolean;
   shifts?: ShiftOption[];
-  onLocalChange?: () => void;
 }
 
 export function ArrivalsTable({
@@ -75,28 +72,15 @@ export function ArrivalsTable({
   onPayment,
   reconcileMode = false,
   shifts = [],
-  onLocalChange,
 }: ArrivalsTableProps) {
   const router = useRouter();
-  const { online, staffId, enabled } = useOfflineContext();
   const [keyDialog, setKeyDialog] = React.useState<DashboardCheckinRow | null>(null);
   const [voidTarget, setVoidTarget] = React.useState<DashboardCheckinRow | null>(null);
   const [newKey, setNewKey] = React.useState<number | null>(null);
   const [pending, setPending] = React.useState(false);
 
   async function handleMarkLeft(row: DashboardCheckinRow) {
-    if (row.pendingSync && enabled) {
-      await enqueue({ type: "mark_left", payload: { checkinId: row.id } }, staffId, businessDate);
-      onLocalChange?.();
-      toast.success("Obeleženo lokalno — čeka sync.");
-      return;
-    }
-    const res = await submitMarkLeft(online, staffId, row.id, businessDate);
-    if ("offline" in res && res.offline) {
-      onLocalChange?.();
-      toast.success("Obeleženo lokalno — čeka sync.");
-      return;
-    }
+    const res = await markLeft({ checkinId: row.id, businessDate });
     if (!res.ok) toast.error(res.error);
     else {
       toast.success("Ključ je oslobođen.");
@@ -108,26 +92,11 @@ export function ArrivalsTable({
     if (!keyDialog) return;
     setPending(true);
     try {
-      if (keyDialog.pendingSync && enabled) {
-        await updatePendingCheckinKey(keyDialog.id, newKey);
-        onLocalChange?.();
-        toast.success("Ključ promenjen lokalno — čeka sync.");
-        setKeyDialog(null);
-        return;
-      }
-      const res = await submitUpdateCheckinKey(
-        online,
-        staffId,
-        keyDialog.id,
-        newKey,
+      const res = await updateCheckinKey({
+        checkinId: keyDialog.id,
+        keyNo: newKey,
         businessDate,
-      );
-      if ("offline" in res && res.offline) {
-        onLocalChange?.();
-        toast.success("Ključ promenjen lokalno — čeka sync.");
-        setKeyDialog(null);
-        return;
-      }
+      });
       if (!res.ok) toast.error(res.error);
       else {
         toast.success("Ključ je promenjen.");
@@ -242,11 +211,6 @@ export function ArrivalsTable({
                   {row.isGroupFitpass && (
                     <Badge variant="outline" className="text-xs">
                       Grupni Fitpass
-                    </Badge>
-                  )}
-                  {row.pendingSync && (
-                    <Badge variant="outline" className="text-xs text-amber-700">
-                      čeka sync
                     </Badge>
                   )}
                 </div>

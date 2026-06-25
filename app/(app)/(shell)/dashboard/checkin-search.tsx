@@ -17,74 +17,24 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { searchMembersForCheckin } from "@/app/(app)/(shell)/dashboard/actions";
-import { useOfflineContext } from "@/components/offline-status";
-import { readCache } from "@/lib/offline/db";
-import { memberHasOpenVisit } from "@/lib/offline/optimistic";
 import { formatFullName, formatMemberNo } from "@/lib/members/format";
 import { businessToday } from "@/lib/time/business-day";
-import type { CheckinSearchRow, DashboardCheckinRow } from "@/lib/dashboard/types";
-import type { MemberSearchRow } from "@/lib/members/types";
+import type { CheckinSearchRow } from "@/lib/dashboard/types";
 import { CreateMemberDialog } from "@/app/(app)/(shell)/clanovi/create-member-dialog";
 
 interface CheckinSearchProps {
   businessDate: string;
-  mergedCheckins: DashboardCheckinRow[];
   onSelectMember: (memberId: string) => void;
   onFitpass: () => void;
   onPayment: (memberId: string) => void;
 }
 
-function memberRowToSearchRow(
-  m: MemberSearchRow,
-  openVisit: { keyNo: number | null } | null,
-): CheckinSearchRow {
-  return {
-    id: m.id,
-    member_no: m.member_no,
-    first_name: m.first_name,
-    last_name: m.last_name,
-    phone: m.phone,
-    discount_flag: m.discount_flag,
-    comment: m.comment,
-    archived: m.archived,
-    created_at: m.created_at,
-    membership_status: m.membership_status,
-    membership_label: m.membership_label,
-    membership_end_date: m.membership_end_date,
-    membership_sessions_left: m.membership_sessions_left,
-    membership_is_time_based: m.membership_is_time_based,
-    total_count: m.total_count,
-    openVisit,
-  };
-}
-
-function searchCachedMembers(
-  members: MemberSearchRow[],
-  query: string,
-  mergedCheckins: DashboardCheckinRow[],
-): CheckinSearchRow[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-
-  const filtered = members.filter((m) => {
-    const name = `${m.first_name} ${m.last_name}`.toLowerCase();
-    const no = m.member_no != null ? String(m.member_no) : "";
-    return name.includes(q) || no.includes(q);
-  });
-
-  return filtered.slice(0, 50).map((m) =>
-    memberRowToSearchRow(m, memberHasOpenVisit(m.id, mergedCheckins)),
-  );
-}
-
 export function CheckinSearch({
   businessDate,
-  mergedCheckins,
   onSelectMember,
   onFitpass,
   onPayment,
 }: CheckinSearchProps) {
-  const { online, enabled } = useOfflineContext();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [rows, setRows] = React.useState<CheckinSearchRow[]>([]);
@@ -100,13 +50,8 @@ export function CheckinSearch({
       }
       setLoading(true);
       try {
-        if (enabled && !online) {
-          const members = (await readCache<MemberSearchRow[]>("members")) ?? [];
-          setRows(searchCachedMembers(members, query, mergedCheckins));
-        } else {
-          const res = await searchMembersForCheckin(query.trim());
-          setRows(res.rows);
-        }
+        const res = await searchMembersForCheckin(query.trim());
+        setRows(res.rows);
       } catch {
         setRows([]);
       } finally {
@@ -114,7 +59,7 @@ export function CheckinSearch({
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [query, open, enabled, online, mergedCheckins]);
+  }, [query, open]);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -145,20 +90,18 @@ export function CheckinSearch({
               {!loading && query.trim().length >= 1 && rows.length === 0 && (
                 <CommandEmpty className="py-4 text-center text-sm">
                   <p>Nema rezultata.</p>
-                  {online && (
-                    <Button
-                      type="button"
-                      variant="link"
-                      className="mt-1 h-auto p-0"
-                      onClick={() => {
-                        setOpen(false);
-                        setCreateOpen(true);
-                      }}
-                    >
-                      <UserPlus className="mr-1 inline h-3 w-3" />
-                      Novi član
-                    </Button>
-                  )}
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="mt-1 h-auto p-0"
+                    onClick={() => {
+                      setOpen(false);
+                      setCreateOpen(true);
+                    }}
+                  >
+                    <UserPlus className="mr-1 inline h-3 w-3" />
+                    Novi član
+                  </Button>
                 </CommandEmpty>
               )}
               <CommandGroup>
@@ -227,23 +170,21 @@ export function CheckinSearch({
         </PopoverContent>
       </Popover>
 
-      {online && (
-        <CreateMemberDialog
-          open={createOpen}
-          onOpenChange={setCreateOpen}
-          redirectToCard={false}
-          onCreated={(id) => {
-            setCreateOpen(false);
-            onSelectMember(id);
-          }}
-          trigger={
-            <Button type="button" variant="secondary" size="sm">
-              <UserPlus className="mr-1 h-4 w-4" />
-              Novi član
-            </Button>
-          }
-        />
-      )}
+      <CreateMemberDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        redirectToCard={false}
+        onCreated={(id) => {
+          setCreateOpen(false);
+          onSelectMember(id);
+        }}
+        trigger={
+          <Button type="button" variant="secondary" size="sm">
+            <UserPlus className="mr-1 h-4 w-4" />
+            Novi član
+          </Button>
+        }
+      />
 
       <Button type="button" variant="secondary" onClick={onFitpass}>
         <Ticket className="mr-1 h-4 w-4" />

@@ -14,8 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { useOfflineContext } from "@/components/offline-status";
-import { submitFitpassCheckin } from "@/lib/offline/submit";
+import { createFitpassCheckin } from "@/app/(app)/(shell)/dashboard/actions";
 import { KEY_COUNT } from "@/lib/dashboard/types";
 import { cn } from "@/lib/utils";
 
@@ -24,7 +23,6 @@ interface FitpassDialogProps {
   onOpenChange: (open: boolean) => void;
   occupiedKeys: number[];
   businessDate: string;
-  onSubmitted?: () => void;
 }
 
 export function FitpassDialog({
@@ -32,10 +30,8 @@ export function FitpassDialog({
   onOpenChange,
   occupiedKeys,
   businessDate,
-  onSubmitted,
 }: FitpassDialogProps) {
   const router = useRouter();
-  const { online, staffId } = useOfflineContext();
   const [keyNo, setKeyNo] = React.useState<number | null>(null);
   const [isGroup, setIsGroup] = React.useState(false);
   const [pending, setPending] = React.useState(false);
@@ -55,17 +51,11 @@ export function FitpassDialog({
     }
     setPending(true);
     try {
-      const res = await submitFitpassCheckin(online, staffId, {
+      const res = await createFitpassCheckin({
         keyNo,
         isGroupFitpass: isGroup,
         businessDate,
       });
-      if ("offline" in res && res.offline) {
-        toast.success("Fitpass sačuvan lokalno — čeka sync.");
-        onOpenChange(false);
-        onSubmitted?.();
-        return;
-      }
       if (!res.ok) {
         toast.error(res.error);
         return;
