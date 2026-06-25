@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import {
   ChevronsUpDown,
@@ -45,10 +45,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { SwitchWorkerDialog } from "@/components/switch-worker-dialog";
 import {
-  endShiftAction,
+  endShiftAndSignOutAction,
   hasOpenShiftAction,
   signOutAction,
 } from "@/lib/shifts/actions";
+import { isRedirectError } from "@/lib/redirect-error";
 import {
   adminNavItems,
   isNavActive,
@@ -68,23 +69,23 @@ export function AppSidebar({
   pendingAttributionCount = 0,
 }: AppSidebarProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const [endShiftOpen, setEndShiftOpen] = React.useState(false);
   const [logoutOpen, setLogoutOpen] = React.useState(false);
   const [switchOpen, setSwitchOpen] = React.useState(false);
   const [pending, setPending] = React.useState(false);
 
-  async function handleEndShift() {
+  // "Završi smenu" ends the shift AND signs out in one server action.
+  // On success the action redirects (throws NEXT_REDIRECT) — re-throw so the
+  // navigation completes; only show a toast for real failures.
+  async function handleEndShiftAndSignOut(closeDialog: () => void) {
     setPending(true);
     try {
-      await endShiftAction();
-      toast.success("Smena je završena.");
-      router.refresh();
-    } catch {
-      toast.error("Greška pri završetku smene.");
-    } finally {
+      await endShiftAndSignOutAction();
+    } catch (e) {
+      if (isRedirectError(e)) throw e;
+      toast.error("Greška. Pokušajte ponovo.");
       setPending(false);
-      setEndShiftOpen(false);
+      closeDialog();
     }
   }
 
@@ -92,7 +93,8 @@ export function AppSidebar({
     setPending(true);
     try {
       await signOutAction();
-    } catch {
+    } catch (e) {
+      if (isRedirectError(e)) throw e;
       toast.error("Greška pri odjavi.");
       setPending(false);
     }
@@ -107,20 +109,6 @@ export function AppSidebar({
       }
     }
     await handleSignOut();
-  }
-
-  async function handleEndShiftAndStay() {
-    setPending(true);
-    try {
-      await endShiftAction();
-      toast.success("Smena je završena.");
-      setLogoutOpen(false);
-      router.refresh();
-    } catch {
-      toast.error("Greška pri završetku smene.");
-    } finally {
-      setPending(false);
-    }
   }
 
   return (
@@ -281,14 +269,16 @@ export function AppSidebar({
           <AlertDialogHeader>
             <AlertDialogTitle>Završiti smenu?</AlertDialogTitle>
             <AlertDialogDescription>
-              Smena će biti zabeležena kao završena. Ostajete prijavljeni u
-              sistem.
+              Smena će biti zabeležena kao završena i bićete odjavljeni.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending}>Otkaži</AlertDialogCancel>
-            <AlertDialogAction onClick={handleEndShift} disabled={pending}>
-              {pending ? "Završavam..." : "Završi smenu"}
+            <AlertDialogAction
+              onClick={() => handleEndShiftAndSignOut(() => setEndShiftOpen(false))}
+              disabled={pending}
+            >
+              {pending ? "Završavam i odjavljujem..." : "Završi smenu i odjavi se"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -299,7 +289,9 @@ export function AppSidebar({
           <AlertDialogHeader>
             <AlertDialogTitle>Otvorena smena</AlertDialogTitle>
             <AlertDialogDescription>
-              Imate otvorenu smenu. Preporučujemo da je završite pre odjave.
+              Imate otvorenu smenu. „Završi smenu i odjavi se” zatvara smenu i
+              odjavljuje vas. „Odjavi se ipak” vas odjavljuje, a smena ostaje
+              otvorena.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
@@ -311,8 +303,11 @@ export function AppSidebar({
             >
               {pending ? "Odjavljivanje..." : "Odjavi se ipak"}
             </AlertDialogAction>
-            <AlertDialogAction onClick={handleEndShiftAndStay} disabled={pending}>
-              {pending ? "Završavam..." : "Završi smenu"}
+            <AlertDialogAction
+              onClick={() => handleEndShiftAndSignOut(() => setLogoutOpen(false))}
+              disabled={pending}
+            >
+              {pending ? "Završavam i odjavljujem..." : "Završi smenu i odjavi se"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

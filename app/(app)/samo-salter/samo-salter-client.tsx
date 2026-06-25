@@ -1,6 +1,7 @@
 "use client";
 
 import { signOutAction } from "@/lib/shifts/actions";
+import { isRedirectError } from "@/lib/redirect-error";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,7 +17,8 @@ export function SamoSalterClient() {
   async function handleSignOut() {
     try {
       await signOutAction();
-    } catch {
+    } catch (e) {
+      if (isRedirectError(e)) throw e;
       toast.error("Greška pri odjavi.");
     }
   }

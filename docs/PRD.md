@@ -196,7 +196,7 @@ Rules:
 
 ### 3.12 Shifts & audit
 - Shifts are derived **automatically from counter logins** (who was logged in and for which period). A shift **opens automatically** when a worker logs in at the counter.
-- **Ending a shift and logging out are separate actions**: a worker can **end the shift** ("Završi smenu") and stay in the app, and **signing out** alone does **not** end the shift. This suits the daily two-worker rotation (e.g. 09:00–15:00 and 15:00–21:00), where the changeover is normally a **handover**.
+- **"Završi smenu" ends the shift and signs the worker out** in one action (the worker is returned to the login screen). **Signing out alone does NOT end the shift** — plain logout leaves the shift open (it stays open until handed over or auto-closed), so a worker stepping away briefly can sign back in and resume. This suits the daily two-worker rotation (e.g. 09:00–15:00 and 15:00–21:00), where the changeover is normally a **handover**.
 - **Handover** is done via a **"switch worker"** ("Zameni radnika") action that re-authenticates the incoming worker (username + password), closes the outgoing worker's shift, and opens the incoming worker's — without fully logging out of the app.
 - A **safety net** auto-closes any shift left open, **20 minutes after the gym's closing time** for that day — **Mon–Fri 21:00, Saturday 18:00, Sunday 16:00** — recording the end time as the actual closing time, so a forgotten logout never produces a bogus multi-hour shift. The worker's session is not disturbed.
 - An Admin sees who worked, until when, and when the next shift started.

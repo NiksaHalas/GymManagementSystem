@@ -324,10 +324,10 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - A shift is a `shift` row (`staff_id`, `started_at`, `ended_at`, `ended_reason`). Logic lives in `lib/shifts/` and delegates mutations to Postgres RPCs **`open_or_resume_shift()`**, **`handover_shift()`**, and **`end_shift()`** (`DB.md` §12; migration `20260617100700_shift_attribution`). **`ensure_open_shift()` is removed** — no auto-handover on login.
 - **Atribucija:** `checkin` and `payment` rows store `staff_id = auth.uid()` always; nullable `shift_id` (assigned when caller has an open shift); `waived_at` / `waived_by` for admin-resolved gaps. Pending badge: `shift_id IS NULL AND waived_at IS NULL AND created_at >= SHIFT_ATTRIBUTION_LAUNCH_AT` (default = migration launch; see `lib/shifts/config.ts`).
 - **Counter layout (fail-open):** `(shell)/layout` calls `openOrResumeShift()` with transient retry. Returns `opened`/`resumed` → OK; `foreign_shift_open` → `ShiftAttributionBanner` + CTA **Preuzmi smenu**; check-in/payment still work with `shift_id NULL`.
-- **Sign-out ≠ end shift:** plain logout only clears auth; on counter, logout prompts **Završi smenu** when `has_open_shift()` is true (`hasOpenShiftAction()`).
+- **Sign-out ≠ end shift:** plain logout only clears auth (shift stays open); on counter, logout prompts **Završi smenu i odjavi se** vs **Odjavi se ipak** when `has_open_shift()` is true (`hasOpenShiftAction()`).
 - **Open / resume:** `open_or_resume_shift()` (**SECURITY DEFINER** since v1.7 hardening; was INVOKER) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally. DEFINER means non-admin workers need **no SELECT on `shift`** (the `shift_select_open` RLS policy was dropped — `DB.md` §12.1).
 - **Handover:** `handoverShiftAction()` / `switchWorkerAction()` call **`handover_shift()`** (**DEFINER**, `FOR UPDATE`) — atomic close (`switch`) + open. Switch worker still requires password sign-in first.
-- **End shift (manual):** `endShiftAction()` → INVOKER `end_shift()` (`ended_reason = 'logout'`); worker **stays signed in**.
+- **End shift (manual):** **"Završi smenu" ends the shift AND signs out** via `endShiftAndSignOutAction()` (single server action: `end_shift()` → `auth.signOut()` → `redirect("/login")`, no `revalidatePath`, so no layout re-render can auto-reopen the shift). `endShiftAction()` (INVOKER `end_shift()`, `ended_reason = 'logout'`) remains for any caller that ends without signing out.
 - **Admin reconcile:** badge in sidebar/header; `/dashboard?unassigned=1` and `/pazar?unassigned=1` with assign/waive actions (`lib/shifts/reconcile-actions.ts`).
 - **Counter guard:** `isCounterDevice()` — remote admin sessions skip shift RPCs and banner.
 - **Safety net:** `pg_cron` `auto_close_shifts()` — see `DB.md` §8.
@@ -422,7 +422,7 @@ Deploy handoff (`c0fd532` on `main`; `supabase db push` no-op at alignment deplo
 - [x] Disabled account (correct password) → **same** generic message (no enumeration)
 - [x] Worker without `gym_counter` cookie → `/samo-salter`, no sidebar
 - [x] Admin remote (no counter) → dashboard overview, članovi, cene, nalozi, pazar + CSV, smene; no check-in / `recordPayment`
-- [x] `has_open_shift()` RPC exists once; logout bundle includes **Završi smenu** / **Odjava** (counter UI — confirm manually in browser)
+- [x] `has_open_shift()` RPC exists once; logout bundle includes **Završi smenu i odjavi se** (ends shift + signs out) / **Odjavi se ipak** (signs out, shift stays open) (counter UI — confirm manually in browser)
 - [x] Last-active-admin guard: 2 active admins; API/UI block on sole admin disable/demote
 - [x] Sidebar labels: Dashboard, Cene članarina, Dnevne uplate / Pazar
 - [x] `/smene` Admin shift history (weekly view, filter, CSV export)
