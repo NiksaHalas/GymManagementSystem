@@ -25,7 +25,7 @@ Otvori Vercel → Project → Settings → Environment Variables (Production). P
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL | **NE — „Plain"** |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Public (anon/publishable) ključ | **NE — „Plain"** |
-| `NEXT_PUBLIC_SITE_URL` | `https://gym-management-system-five-ashy.vercel.app` (tačan prod URL, bez viška znakova) | **NE — „Plain"** |
+| `NEXT_PUBLIC_SITE_URL` | `https://<your-app>.vercel.app` (tačan prod URL, bez viška znakova) | **NE — „Plain"** |
 | `SUPABASE_SERVICE_ROLE_KEY` | Privilegovan ključ (server/lokalno) | DA — Sensitive |
 | `COUNTER_DEVICE_SECRET` | HMAC tajna za `gym_counter` cookie | DA — Sensitive |
 | `RESEND_API_KEY` | Slanje reset email-ova | DA — Sensitive |

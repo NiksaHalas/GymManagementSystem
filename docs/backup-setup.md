@@ -30,7 +30,7 @@ Postavi kao **korisničke** env varijable na Windows nalogu pod kojim se task iz
 ili preko `setx`:
 
 ```
-setx NEXT_PUBLIC_SUPABASE_URL    "https://qkmrssvfeljfkqbbxfpr.supabase.co"
+setx NEXT_PUBLIC_SUPABASE_URL    "https://<project-ref>.supabase.co"
 setx SUPABASE_SERVICE_ROLE_KEY   "<service-role-key>"
 setx GYM_USB_BACKUP_PATH         "D:\"
 ```
