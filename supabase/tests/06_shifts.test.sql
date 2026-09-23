@@ -14,6 +14,9 @@ insert into ctx values
   ('b', tests.create_staff('t_marko')),
   ('m', tests.create_member('Smena', 'Član'));
 
+-- Start from an empty counter (the demo seed leaves today's morning shift open).
+update shift set ended_at = now(), ended_reason = 'logout' where ended_at is null;
+
 select tests.login(pg_temp.c('a'));
 select is(open_or_resume_shift(), 'opened', 'the first worker on the counter opens a shift');
 select is(open_or_resume_shift(), 'resumed', 'the same worker resumes their open shift');
