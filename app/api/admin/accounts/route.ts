@@ -4,6 +4,7 @@ import { createAdminClient } from "@/utils/supabase/admin";
 import { getAdminOrNull } from "@/lib/auth/session";
 import { normalizeUsername, usernameToEmail } from "@/lib/auth/username";
 import { sendPasswordResetEmail } from "@/lib/auth/password-reset";
+import { DEMO_DISABLED_MESSAGE, isDemoMode } from "@/lib/demo";
 
 const LAST_ADMIN_ERROR =
   "Ne možete ukloniti poslednjeg aktivnog administratora.";
@@ -80,6 +81,11 @@ export async function POST(req: NextRequest) {
   const caller = await getAdminOrNull();
   if (!caller) {
     return NextResponse.json({ error: "Nemate pristup." }, { status: 403 });
+  }
+
+  // Demo visitors share the accounts; never let one lock the others out.
+  if (isDemoMode()) {
+    return NextResponse.json({ error: DEMO_DISABLED_MESSAGE }, { status: 403 });
   }
 
   const body = await req.json().catch(() => null);

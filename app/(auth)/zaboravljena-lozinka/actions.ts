@@ -2,6 +2,7 @@
 
 import { normalizeUsername } from "@/lib/auth/username";
 import { sendPasswordResetEmail } from "@/lib/auth/password-reset";
+import { isDemoMode } from "@/lib/demo";
 import {
   buildRateLimitKeys,
   isRateLimited,
@@ -17,6 +18,9 @@ export async function requestPasswordResetAction(
 ): Promise<void> {
   const username = normalizeUsername(rawUsername);
   if (!username) return;
+
+  // The demo never sends email (the UI shows the same generic confirmation).
+  if (isDemoMode()) return;
 
   const rateLimitKeys = await buildRateLimitKeys("reset", username);
   if (await isRateLimited(rateLimitKeys)) {
