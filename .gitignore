@@ -48,3 +48,12 @@ next-env.d.ts
 # supabase local
 supabase/.branches
 supabase/.temp
+
+# local data, DB dumps & exports (backup-usb.mjs output, admin CSV/XLSX exports)
+gym-backup/
+*.dump
+*.csv
+*.xlsx
+
+# agent local settings
+.claude/settings.local.json

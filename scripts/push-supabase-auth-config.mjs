@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /**
  * Push Auth redirect URLs + OTP expiry to the linked Supabase project.
- * Requires SUPABASE_ACCESS_TOKEN (from `supabase login` or dashboard → Access Tokens).
+ *
+ * Requires:
+ *   SUPABASE_ACCESS_TOKEN  (from `supabase login` or dashboard → Access Tokens)
+ *   SUPABASE_PROJECT_REF   (or NEXT_PUBLIC_SUPABASE_URL, from which it is derived)
+ * Both are read from the environment or from .env.local.
  *
  * Usage:
  *   node scripts/push-supabase-auth-config.mjs
@@ -12,7 +16,6 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_REF = "qkmrssvfeljfkqbbxfpr";
 
 function loadEnvLocal() {
   const envPath = resolve(__dirname, "../.env.local");
@@ -34,6 +37,19 @@ function loadEnvLocal() {
     // fall through
   }
   return vars;
+}
+
+/**
+ * Resolve the target project ref from the environment. Never hardcoded: this repo
+ * is public, and a committed ref names the production project to everyone.
+ */
+function resolveProjectRef(env) {
+  const explicit = process.env.SUPABASE_PROJECT_REF ?? env.SUPABASE_PROJECT_REF;
+  if (explicit) return explicit.trim();
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? env.NEXT_PUBLIC_SUPABASE_URL;
+  const match = url?.match(/^https:\/\/([a-z0-9]+)\.supabase\.(?:co|in)/i);
+  return match?.[1];
 }
 
 function mergeRedirectUrls(existing, siteUrl) {
@@ -61,6 +77,15 @@ async function main() {
   if (!token) {
     console.error(
       "❌  SUPABASE_ACCESS_TOKEN is not set. Run `supabase login` or export a personal access token.",
+    );
+    process.exit(1);
+  }
+
+  const PROJECT_REF = resolveProjectRef(env);
+  if (!PROJECT_REF) {
+    console.error(
+      "❌  No project ref. Set SUPABASE_PROJECT_REF, or NEXT_PUBLIC_SUPABASE_URL\n" +
+        "    (https://<project-ref>.supabase.co), in the environment or .env.local.",
     );
     process.exit(1);
   }
