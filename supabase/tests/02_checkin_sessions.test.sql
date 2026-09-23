@@ -3,7 +3,7 @@
 -- activation, and the "use remaining sessions after expiry" override.
 
 begin;
-select plan(19);
+select plan(22);
 
 create temp table ctx (k text primary key, id uuid);
 insert into ctx values
@@ -18,6 +18,8 @@ insert into ctx values
   ('m_exp',    tests.create_member('Istekla', 'Trener')),
   ('m_oexp',   tests.create_member('Istekla', 'Solo')),
   ('m_oexp2',  tests.create_member('Istekla', 'Bez')),
+  ('m_ocov',   tests.create_member('Mesecna', 'Stari')),
+  ('m_tcov',   tests.create_member('Mesecna', 'Trener')),
   ('m_mism',   tests.create_member('Pogresna', 'Kategorija'));
 grant select, insert on ctx to authenticated;
 
@@ -36,7 +38,14 @@ insert into ctx values
                  business_today() - 60, 'istekla', 2)),
   ('ms_oexp2', tests.give_membership(pg_temp.c('m_oexp2'),  'otvoreni', '8/1',
                  business_today() - 60, 'istekla', 2)),
-  ('ms_mism',  tests.give_membership(pg_temp.c('m_mism'),   'individualni', '8/1'));
+  ('ms_mism',  tests.give_membership(pg_temp.c('m_mism'),   'individualni', '8/1')),
+  -- active monthly membership + an old expired package with sessions left
+  ('ms_ocov_old', tests.give_membership(pg_temp.c('m_ocov'), 'otvoreni', '8/1',
+                 business_today() - 90, 'istekla', 3)),
+  ('ms_ocov',  tests.give_membership(pg_temp.c('m_ocov'),   'otvoreni', '30/1')),
+  ('ms_tcov_old', tests.give_membership(pg_temp.c('m_tcov'), 'individualni', '8/1',
+                 business_today() - 90, 'istekla', 3)),
+  ('ms_tcov',  tests.give_membership(pg_temp.c('m_tcov'),   'otvoreni', '30/1'));
 
 update membership
 set start_mode = 'first_visit', start_date = null, end_date = null
@@ -142,6 +151,24 @@ select create_checkin(p_member_id := pg_temp.c('m_oexp2'), p_key_no := 10,
   p_allow_expired_override := false);
 select is((select sessions_left from membership where id = pg_temp.c('ms_oexp2')), 2,
   'without the override an expired package is left untouched');
+
+-- An active time-based membership covers a solo arrival: no override, even if asked.
+insert into ctx values ('ck_ocov', create_checkin(p_member_id := pg_temp.c('m_ocov'), p_key_no := 11,
+  p_allow_expired_override := true));
+select is((select sessions_left from membership where id = pg_temp.c('ms_ocov_old')), 3,
+  'solo override never burns an old package while a monthly membership is active');
+select is(
+  (select array[membership_id::text, decremented_session::text] from checkin where id = pg_temp.c('ck_ocov')),
+  array[pg_temp.c('ms_ocov')::text, 'false'],
+  'that arrival is recorded on the active monthly membership, without deduction');
+
+-- ...but a monthly Otvoreni does not cover a trainer session: its override still applies.
+select create_checkin(
+  p_member_id := pg_temp.c('m_tcov'), p_key_no := 12, p_with_trainer := true,
+  p_training_category_id := tests.category_id('individualni'),
+  p_trainer_id := pg_temp.c('trainer'), p_allow_expired_override := true);
+select is((select sessions_left from membership where id = pg_temp.c('ms_tcov_old')), 2,
+  'trainer override still uses an expired trainer package next to a monthly Otvoreni');
 
 select * from finish();
 rollback;

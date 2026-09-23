@@ -1,6 +1,6 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.27
+Version: 1.28
 Date: 2026-09-23
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
@@ -33,6 +33,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.25 records **Phase 3 rollback — online-only counter** (2026-06-25): removed PWA/offline layer (`lib/offline/`, `@serwist/next`, `serwist`, `idb`, service worker, connectivity UI, Playwright offline e2e). Dashboard check-in/payment use **direct server actions** only. **`scripts/backup-usb.mjs` retained**; cloud backup = ops plan (not app code). DB `p_id` migration **not reverted**. Delivery: standard web app (Chrome/Edge/Firefox). See `PRD.md` v1.22 / `DB.md` v1.25.
 > v1.26 records **Phase 3 DB rollback — revert offline `p_id`** (2026-06-25): migration `20260625160000_revert_offline_p_id` restores `create_checkin` / `record_payment` without `p_id`; app schemas/actions no longer send client ids. **No table/data changes.** Repo: **41** migrations. See `PRD.md` v1.23 / `DB.md` v1.26.
 > v1.27 (2026-09-23) covers **tests, CI and the public demo**. (1) **Testing & CI** (§13): Vitest unit tests for the pure TS modules; a pgTAP suite in `supabase/tests/` that replaces the old `scripts/verify_*.sql`; GitHub Actions for lint, typecheck, unit tests, build, all migrations + seed on an empty DB + pgTAP, and gitleaks. (2) **Fixes the tests surfaced**: migration `20260923120000` makes `end_shift()` SECURITY DEFINER, because workers have no SELECT on `shift` and the UPDATE matched 0 rows; the `rls_auto_enable` revoke is guarded so migrations apply on an empty DB; `/smene` weekday names use `sr-Latn-RS`; month/year takings and CSV page past PostgREST `max_rows` (`fetchAllRows`). (3) **Demo mode** (§14, `demo.md`): the hosted project (§9) becomes a permanent public demo. It adds the `DEMO_MODE` flag, one-click demo sign-in (redirects straight to `/dashboard`; a redirect to `/` broke in production builds), guards on account changes and reset email, an English guide banner, the `supabase/demo/` generator + nightly reset, and `scripts/demo-staff.mjs`. (4) README media and metrics come from `scripts/capture-media.mjs` and `scripts/repo-metrics.mjs`. Repo: **42** migrations. See `PRD.md` v1.25 / `DB.md` v1.27.
+> v1.28 (2026-09-23): the check-in dialog (`getOverrideCandidate` in `checkin-dialog.tsx`) no longer offers the solo "use remaining sessions after expiry" override, or its hint, when an active in-date time-based membership covers the arrival. `create_checkin` enforces the same rule (migration `20260923130000`, `DB.md` v1.28). Found in the live-demo smoke test. Also fixes a double period after the date in the override confirm. See `PRD.md` v1.26.
 
 ---
 
@@ -180,7 +181,7 @@ utils/
   supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
 supabase/
-  migrations/                   # SQL migrations (42 files as of 2026-09-23; see DB.md)
+  migrations/                   # SQL migrations (43 files as of 2026-09-23; see DB.md)
   tests/                        # pgTAP suite (`supabase test db`; §13)
   demo/                         # demo generator + nightly reset job — demo project only, NOT migrations (§14)
   seed.sql                      # local/CI seed: demo staff + demo.reset()

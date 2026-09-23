@@ -22,7 +22,7 @@ Povezani dokumenti:
 ## Korak 1 — Verifikacija
 
 ### 1.1 Migracije baze
-- Očekivano: **42/42 migracije, bez drifta**, poslednja `20260923120000 end_shift_security_definer`.
+- Očekivano: **43/43 migracije, bez drifta**, poslednja `20260923130000 expired_override_not_when_covered`.
 - Provera: `npx supabase migration list --linked`.
 - Status: proveriti na novom projektu (na demo projektu je potvrđeno 2026-09-23).
 

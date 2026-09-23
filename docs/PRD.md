@@ -1,6 +1,6 @@
 # PRD — Gym Management System
 
-Version: 1.25
+Version: 1.26
 Date: 2026-09-23
 Status: Approved for development; v1 scope (Phase 0–3, online-only) implemented. **Not yet deployed at the gym.** The hosted environment is a **public demo** with generated data (`demo.md`).
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
@@ -27,6 +27,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.23 records **Phase 3 DB rollback — revert offline idempotency** (2026-06-25): Supabase RPCs `create_checkin` / `record_payment` no longer accept client-supplied ids (`p_id` removed). Historical migration `20260625120000` remains in ledger; forward migration `20260625160000` restores pre-offline signatures. No product behaviour change for online-only counter. See `Tech.md` v1.26 / `DB.md` v1.26.
 > v1.24 records **go-live verified on production** (2026-06-25): migrations 41/41 in sync, Vercel env confirmed (`NEXT_PUBLIC_*` Plain), full pre-launch smoke test passed, and USB backup verified on the counter PC (`scripts/backup-usb.mjs`, JSON fallback, size logging). Operational runbook + checklists added: `go-live.md`, `smoke-test.md`, `backup-setup.md` (§9.1).
 > v1.25 corrects the **deployment status** (2026-09-23). The hosted environment called "production" in v1.6–v1.24 passed the go-live checks but **was never put into use at the gym**. It is now a permanent **public demo**: generated data (12 months + 1 warm-up month, ~370 members), reset nightly; one-click sign-in as counter worker or owner; an English guide over the Serbian UI; account changes and reset emails disabled. The gym will get a **new, clean deployment** (`go-live.md`). Also fixed in this round: „Završi smenu" now actually closes the shift for workers; month/year takings no longer stop counting at 1,000 payments; weekday names on „Smene" are in latinica. See `Tech.md` v1.27 / `DB.md` v1.27 / `demo.md`.
+> v1.26 clarifies the **override after expiry** (§3.4) (2026-09-23). It is for arrivals the current membership does not cover. A member with an active time-based membership (e.g. Otvoreni 30/1) is not offered, and cannot be charged, a session from an old expired package on a solo arrival. A trainer session can still use an expired package of the same training category, because a time-based Otvoreni membership does not cover trainer sessions (§3.5). See `Tech.md` v1.28 / `DB.md` v1.28.
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -138,7 +139,7 @@ Rules:
   - Trainer session (individual/duo/guided) → 1 session per member per session (for duo and group, each present member loses 1, written to their card).
   - Open type session-based (8/1, 12/1, daily) → each arrival deducts 1 session.
   - Time-based → nothing is deducted; only the arrival stays in history.
-- **Using remaining sessions after expiry**: allowed via override. **Any worker can approve the override with a confirmation.**
+- **Using remaining sessions after expiry**: allowed via override. **Any worker can approve the override with a confirmation.** It applies only when the member's current membership does not cover the arrival: a solo arrival covered by an active time-based membership never uses an old package's sessions.
 - **Pause ("Pauziraj članarinu")** freezes the membership; **"Nastavi članarinu"** resumes it. Pausing **extends the end date by the exact number of paused days** (applies to both time-based and session-based). **No limit** on pausing — pause/resume anytime.
 - **Renewal/extension**: a **new period** is created; the card shows the current period plus the history of earlier ones.
 
