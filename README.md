@@ -189,11 +189,11 @@ and the local Supabase stack.
 
 | | |
 |---|---|
-| SQL migrations | 42 |
+| SQL migrations | 43 |
 | Postgres functions in `public` | 23, 18 callable by signed-in staff |
 | RLS policies | 47, on 13 of 13 tables |
 | Vitest unit tests | 66 in 9 files |
-| pgTAP assertions | 97 in 8 files |
+| pgTAP assertions | 100 in 8 files |
 | `create_checkin()` time inside Postgres | p50 0.18–0.20 ms, p95 0.35–0.51 ms |
 
 The `create_checkin()` figures come from three runs of 200 calls each, as the counter
@@ -211,7 +211,8 @@ shifts. It is synthetic data, not the gym's records.
 
 ## Bugs the tests and the demo data caught
 
-Adding tests and a year of realistic data exposed five bugs that had shipped:
+Adding tests, a year of realistic data and a smoke test of the live demo exposed six bugs
+that had shipped:
 
 1. **"Završi smenu" silently did nothing.** A hardening migration removed workers' read
    access to `shift`. `end_shift()` still ran with the caller's rights, and an `UPDATE`
@@ -231,6 +232,13 @@ Adding tests and a year of realistic data exposed five bugs that had shipped:
    which redirects again. The action response then carried a `Location` header, and the
    client got HTML instead of its RSC payload. `next dev` did not show it. The
    media-capture script, run against `next build`, did.
+6. **An expired package's session was offered on top of an active monthly membership.**
+   A member who moved from an 8-session package to a monthly one kept the old package's
+   unused sessions. At check-in the dialog offered to spend one, and `create_checkin`
+   would deduct it, even though the monthly membership already covered the visit.
+   Surfaced by the smoke test on the live demo. Seven generated members were affected.
+   Fixed in both the dialog and the RPC, with pgTAP tests for both the solo and the
+   trainer case.
 
 ## Testing and CI
 
@@ -303,8 +311,8 @@ than ad-hoc prompts:
 
 The agents got things wrong, and the record is kept rather than tidied away:
 
-- Three of the five bugs above (1, 3 and the demo sign-in) came from commits co-authored
-  by Claude. The other two came from commits by Cursor's agent.
+- Of the six bugs above, 1, 3 and 5 came from commits co-authored by Claude. 2, 4 and 6
+  came from commits by Cursor's agent.
 - [docs/Tech.md](docs/Tech.md) §9 keeps a table of deployment incidents. One example:
   applying migrations through the Supabase MCP stamped the remote ledger with its own
   timestamps and drifted it from the repo filenames. It had to be reconciled with

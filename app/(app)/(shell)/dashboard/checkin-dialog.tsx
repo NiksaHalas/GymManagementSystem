@@ -207,7 +207,11 @@ function CheckinDialogForm({
         ctx.isSessionBasedOpen &&
         ctx.membershipStatus === "active" &&
         (ctx.sessionsLeft ?? 0) > 0;
-      if (expiredOtvoreni && !normalSoloWouldDeduct) {
+      // An active, in-date time-based membership (e.g. Otvoreni 30/1) already
+      // covers a solo arrival — never burn a session from an old package then.
+      const coveredByTimeBased =
+        ctx.membershipStatus === "active" && ctx.isTimeBased === true;
+      if (expiredOtvoreni && !normalSoloWouldDeduct && !coveredByTimeBased) {
         return expiredOtvoreni;
       }
       return null;
@@ -560,11 +564,12 @@ function CheckinDialogForm({
             <AlertDialogDescription>
               {overrideCandidate && (
                 <>
+                  {/* formatDate already ends with a period ("16.11.2025.") */}
                   Članarina je istekla{" "}
                   {overrideCandidate.endDate
                     ? formatDate(overrideCandidate.endDate)
-                    : "—"}
-                  . Preostalo {overrideCandidate.sessionsLeft} sesija. Iskoristiti
+                    : "—."}{" "}
+                  Preostalo {overrideCandidate.sessionsLeft} sesija. Iskoristiti
                   jednu?
                 </>
               )}

@@ -1,6 +1,6 @@
 # DB — Database Schema
 
-Version: 1.27
+Version: 1.28
 Date: 2026-09-23
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
@@ -32,6 +32,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.25 — **Phase 3 rollback — online-only app** (2026-06-25). **No schema change.** Migration `20260625120000` **retained** on remote; `p_id` remains an optional RPC parameter (client sends `null`). §6 shortened: UUID PKs + `business_date` unchanged; offline enqueue/drain narrative removed. See `Tech.md` v1.25 / PRD v1.22.
 > v1.26 — **Phase 3 DB rollback — revert offline `p_id`** (2026-06-25). Migration `20260625160000_revert_offline_p_id`: **drop + recreate** `create_checkin` / `record_payment` without `p_id` (restores pre-v1.24 signatures/bodies from `20260623140000` / `20260619140000`). **No table or data changes.** App no longer sends `p_id`. Repo: **41** migration files. See `Tech.md` v1.26 / PRD v1.23.
 > v1.27 — **`end_shift` fix, empty-DB migrations, demo schema** (2026-09-23). Migration `20260923120000_end_shift_security_definer` makes `end_shift()` **SECURITY DEFINER** with `search_path = public` (§12.3). As INVOKER its UPDATE matched 0 rows for workers, because workers have no SELECT on `shift`. Migration `20260618120200` now revokes `rls_auto_enable()` only if the function exists, so every migration applies on an empty database (CI, local `db reset`). New **`demo` schema** (§13): generator + nightly reset job `demo-nightly-reset`, **demo project only, not a migration**. The pgTAP suite in `supabase/tests/` replaces `scripts/verify_*.sql` (`Tech.md` §13). Repo: **42** migrations.
+> v1.28 — **No solo override while a time-based membership covers the visit** (2026-09-23). Migration `20260923130000_expired_override_not_when_covered` (`create or replace create_checkin`, signature unchanged). The solo `p_allow_expired_override` branch now skips when the member has an active, in-date time-based membership. Before, a member with an active Otvoreni 30/1 and an old expired 8/1 package lost a session from the old package whenever the worker confirmed the dialog. Trainer override unchanged, because a time-based Otvoreni does not cover a trainer session. pgTAP: `02_checkin_sessions`. Repo: **43** migrations.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -765,7 +766,7 @@ Atomically inserts a `checkin` row and applies side effects:
 | `p_with_trainer` | When true, requires `p_training_category_id` + `p_trainer_id` (trainer-based category) |
 | `p_is_fitpass` / `p_is_group_fitpass` | Anonymous Fitpass; group flag inserts immediate `payment` `kind='fitpass_surcharge'` (+300 RSD) |
 | `p_business_date` | Defaults to `business_today()` |
-| `p_allow_expired_override` | (v1.23) When true, allows deducting 1 session from an expired-by-date session-based package (`istekla` or `aktivna`+past `end_date`, `sessions_left > 0`, `is_time_based=false`) if the normal path did not deduct — trainer: same category + `session_log`; solo Otvoreni: no `session_log`. Flips `aktivna`+past → `istekla`. When false, expired paths fall through to no-op (solo) or `reserved_session` (trainer). Time-based expired packages never override. |
+| `p_allow_expired_override` | (v1.23) When true, allows deducting 1 session from an expired-by-date session-based package (`istekla` or `aktivna`+past `end_date`, `sessions_left > 0`, `is_time_based=false`) if the normal path did not deduct — trainer: same category + `session_log`; solo Otvoreni: no `session_log`. Flips `aktivna`+past → `istekla`. When false, expired paths fall through to no-op (solo) or `reserved_session` (trainer). Time-based expired packages never override. **Solo:** ignored while the member has an active, in-date **time-based** membership, which already covers the arrival (v1.28). |
 
 **Side effects** (when applicable) — trainer session is modelled **by training category** (v1.15):
 - **Paused membership** (`status='pauzirana'`, v1.20): record the arrival only — `checkin.membership_id = null`; no session decrement, no `session_log`, no `reserved_session`, no first-visit activation. `with_trainer` / `trainer_id` / `training_category_id` are still written on the check-in row for history.
