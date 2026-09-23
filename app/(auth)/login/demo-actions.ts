@@ -70,5 +70,8 @@ export async function demoSignInAction(
     await unsetCounterDevice();
   }
 
-  redirect("/");
+  // Straight to /dashboard, not "/": "/" redirects again, and in a production
+  // build that second hop turns the action's 303 into a plain HTML response the
+  // client rejects ("An unexpected response was received from the server").
+  redirect("/dashboard");
 }
