@@ -1,8 +1,8 @@
 # PRD — Gym Management System
 
-Version: 1.24
-Date: 2026-06-25
-Status: Approved for development; **Phase 0 live in production** (2026-06-18); **go-live verified** (2026-06-25)
+Version: 1.25
+Date: 2026-09-23
+Status: Approved for development; v1 scope (Phase 0–3, online-only) implemented. **Not yet deployed at the gym.** The hosted environment is a **public demo** with generated data (`demo.md`).
 Language note: The product UI is **Serbian (latinica)**. This document is written in English for the development team; Serbian product terms and UI labels are kept in quotes where relevant.
 
 > This document describes **what** the product must do (product & business requirements). It intentionally contains **no technical or database details** — see `Tech.md` and `DB.md` for those.
@@ -26,6 +26,7 @@ Language note: The product UI is **Serbian (latinica)**. This document is writte
 > v1.22 records **Phase 3 rollback — online-only counter** (2026-06-25): product decision to **cancel offline/PWA**; the counter requires internet for check-in and payment. Reliability = **Supabase (primary cloud)** + **USB backup 3×/day** (`scripts/backup-usb.mjs`, Windows Task Scheduler). Additional cloud backup (Supabase scheduled backups / ops plan) is **not implemented in app code**. Removed: PWA, service worker, IndexedDB outbox, offline connectivity UI. See `Tech.md` v1.25 / `DB.md` v1.25.
 > v1.23 records **Phase 3 DB rollback — revert offline idempotency** (2026-06-25): Supabase RPCs `create_checkin` / `record_payment` no longer accept client-supplied ids (`p_id` removed). Historical migration `20260625120000` remains in ledger; forward migration `20260625160000` restores pre-offline signatures. No product behaviour change for online-only counter. See `Tech.md` v1.26 / `DB.md` v1.26.
 > v1.24 records **go-live verified on production** (2026-06-25): migrations 41/41 in sync, Vercel env confirmed (`NEXT_PUBLIC_*` Plain), full pre-launch smoke test passed, and USB backup verified on the counter PC (`scripts/backup-usb.mjs`, JSON fallback, size logging). Operational runbook + checklists added: `go-live.md`, `smoke-test.md`, `backup-setup.md` (§9.1).
+> v1.25 corrects the **deployment status** (2026-09-23). The hosted environment called "production" in v1.6–v1.24 passed the go-live checks but **was never put into use at the gym**. It is now a permanent **public demo**: generated data (12 months + 1 warm-up month, ~370 members), reset nightly; one-click sign-in as counter worker or owner; an English guide over the Serbian UI; account changes and reset emails disabled. The gym will get a **new, clean deployment** (`go-live.md`). Also fixed in this round: „Završi smenu" now actually closes the shift for workers; month/year takings no longer stop counting at 1,000 payments; weekday names on „Smene" are in latinica. See `Tech.md` v1.27 / `DB.md` v1.27 / `demo.md`.
 > v1.14 records **Admin Smene history UI** (2026-06-19): `/smene` is no longer a stub — Admins (including remote, without counter cookie) see a **weekly shift history** (Mon–Sun navigation via `?date=`, optional worker filter), per-day worker summaries, how each shift ended (`logout` / `switch` / `auto_close` / open), gaps in counter coverage vs gym opening hours, and CSV export for the displayed week. Shift runtime (open/handover/end, auto-close, reconcile) unchanged. See `Tech.md` v1.17 / `DB.md` v1.18.
 > v1.15 records **Payment ↔ Check-in link (Etapa 2 complete)** (2026-06-22): membership payments and same-day arrivals for the **same member** are linked via `payment.checkin_id` regardless of UI entry point or order (pay-then-check-in or check-in-then-pay). Explicit link from the arrivals-row **Naplati**; app-layer auto-match when UI passes `null`. **Accepted edge:** a same-day renewal payment with no training intent may still attach to a later arrival that day (cosmetic badge only — voiding the arrival never voids the membership payment). See `Tech.md` v1.18–v1.20 / `DB.md` v1.19.
 
@@ -329,9 +330,9 @@ Rules:
 
 ---
 
-## 9. Implementation status (as of 2026-06-25)
+## 9. Implementation status (as of 2026-09-23)
 
-This section tracks delivery against the requirements above (Phase 0–3, online-only). Technical detail lives in `Tech.md` / `DB.md`. Phase 3 added the unreturned-keys report, session override after expiry, pause/resume, the Fitpass +300 surcharge, and the USB backup script; the offline/PWA layer that was briefly added in Phase 3 was **rolled back to online-only** (2026-06-25, see v1.22–v1.23). **Go-live verified on production 2026-06-25** (env, counter registration, smoke test, USB backup) — operational runbook in `go-live.md` / `smoke-test.md` / `backup-setup.md`.
+This section tracks delivery against the requirements above (Phase 0–3, online-only). Technical detail lives in `Tech.md` / `DB.md`. Phase 3 added the unreturned-keys report, session override after expiry, pause/resume, the Fitpass +300 surcharge, and the USB backup script; the offline/PWA layer that was briefly added in Phase 3 was **rolled back to online-only** (2026-06-25, see v1.22–v1.23). The hosted environment passed the go-live checks on 2026-06-25 (env, counter registration, smoke test, USB backup), but it was **not put into use at the gym**; since 2026-09-23 it is the **public demo** (`demo.md`). The gym gets a new deployment following `go-live.md` / `smoke-test.md` / `backup-setup.md`.
 
 ### 9.1 Done
 | Area | Scope |
@@ -350,6 +351,7 @@ This section tracks delivery against the requirements above (Phase 0–3, online
 | **Session override after expiry (§3.4)** | Worker confirm to use 1 remaining session on an expired session-based package (solo Otvoreni or trainer, same category); decline → arrival without deduction (trainer → `reserved_session` debt); search badge „Istekla — preostalo {n} sesija"; void restores session (`DB.md` §10.2) |
 | **USB backup (Phase 3)** | `scripts/backup-usb.mjs` — `pg_dump` or JSON export; schedule 3×/day on counter PC via Task Scheduler |
 | **Online-only counter (Phase 3 rollback)** | Offline/PWA layer removed (2026-06-25); check-in and payment require internet; direct server actions only |
+| **Public demo (hosted)** | One-click sign-in as counter worker or owner; English guide banner over the Serbian UI; generated data for the past 13 months, reset nightly; account changes and password-reset emails disabled (`demo.md`) |
 
 ### 9.2 Dashboard v1 — explicitly deferred
 Nema preostalih deferred stavki za dashboard v1. (Duplicate check-in while member still present je sada Done — open-visit guard **GYM05**, migracija `20260622130000_open_visit_guard`; vidi §9.1 „Dashboard v1".)

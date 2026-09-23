@@ -1,7 +1,7 @@
 # Tech — Architecture & Technical Implementation
 
-Version: 1.26
-Date: 2026-06-25
+Version: 1.27
+Date: 2026-09-23
 Companion docs: `PRD.md` (product requirements), `DB.md` (database schema).
 
 This document describes **how** the Gym Management System is built: the stack, the services, and how each requirement in `PRD.md` is implemented technically.
@@ -32,6 +32,7 @@ This document describes **how** the Gym Management System is built: the stack, t
 > v1.24 records **Phase 3 — PWA + offline + USB backup** (2026-06-25): `@serwist/next` + `serwist` + `idb`; `lib/offline/` (IndexedDB cache/outbox, main-thread `sync.ts`, `useOfflineSync`, submit wrappers); counter-only offline check-in/payment with optimistic UI + chronological drain via existing server actions; migration `20260625120000` adds **`p_id`** idempotency on `create_checkin` / `record_payment`; kill switch **`NEXT_PUBLIC_OFFLINE_ENABLED`**; `GET /api/health`; `scripts/backup-usb.mjs`; verification `scripts/verify_offline_idempotency.sql`. Repo: **40** migrations. See `PRD.md` v1.21 / `DB.md` v1.24.
 > v1.25 records **Phase 3 rollback — online-only counter** (2026-06-25): removed PWA/offline layer (`lib/offline/`, `@serwist/next`, `serwist`, `idb`, service worker, connectivity UI, Playwright offline e2e). Dashboard check-in/payment use **direct server actions** only. **`scripts/backup-usb.mjs` retained**; cloud backup = ops plan (not app code). DB `p_id` migration **not reverted**. Delivery: standard web app (Chrome/Edge/Firefox). See `PRD.md` v1.22 / `DB.md` v1.25.
 > v1.26 records **Phase 3 DB rollback — revert offline `p_id`** (2026-06-25): migration `20260625160000_revert_offline_p_id` restores `create_checkin` / `record_payment` without `p_id`; app schemas/actions no longer send client ids. **No table/data changes.** Repo: **41** migrations. See `PRD.md` v1.23 / `DB.md` v1.26.
+> v1.27 (2026-09-23) covers **tests, CI and the public demo**. (1) **Testing & CI** (§13): Vitest unit tests for the pure TS modules; a pgTAP suite in `supabase/tests/` that replaces the old `scripts/verify_*.sql`; GitHub Actions for lint, typecheck, unit tests, build, all migrations + seed on an empty DB + pgTAP, and gitleaks. (2) **Fixes the tests surfaced**: migration `20260923120000` makes `end_shift()` SECURITY DEFINER, because workers have no SELECT on `shift` and the UPDATE matched 0 rows; the `rls_auto_enable` revoke is guarded so migrations apply on an empty DB; `/smene` weekday names use `sr-Latn-RS`; month/year takings and CSV page past PostgREST `max_rows` (`fetchAllRows`). (3) **Demo mode** (§14, `demo.md`): the hosted project (§9) becomes a permanent public demo. It adds the `DEMO_MODE` flag, one-click demo sign-in (redirects straight to `/dashboard`; a redirect to `/` broke in production builds), guards on account changes and reset email, an English guide banner, the `supabase/demo/` generator + nightly reset, and `scripts/demo-staff.mjs`. (4) README media and metrics come from `scripts/capture-media.mjs` and `scripts/repo-metrics.mjs`. Repo: **42** migrations. See `PRD.md` v1.25 / `DB.md` v1.27.
 
 ---
 
@@ -160,6 +161,7 @@ components/
   ui/                           # shadcn primitives
   payment/payment-dialog.tsx    # shared cash-payment dialog (implemented)
   app-sidebar.tsx, app-header.tsx, switch-worker-dialog.tsx, counter-device-toggle.tsx, placeholder-page.tsx  # (implemented)
+  demo-banner.tsx               # English guide, demo mode only (§14)
 lib/
   utils.ts                      # cn() + helpers
   nav.ts                        # sidebar nav items + active-state + page titles (implemented)
@@ -171,19 +173,27 @@ lib/
   pazar/                        # payment queries, catalog, zod schemas, format (implemented)
   supabase/
     server-client.ts            # cached getServerSupabase() per RSC request (implemented)
+  demo.ts                       # DEMO_MODE flag + demo accounts (server-only; §14)
   db/                           # typed queries + generated types (lib/db/types.ts)
   time/                         # Europe/Belgrade business-day helpers (implemented: business-day.ts — belgradeDayOf, belgradeInstant, weekStartMonday, addDays)
 utils/
   supabase/{server,client,middleware,admin}.ts
   resend/{client,send}.ts
 supabase/
-  migrations/                   # SQL migrations (40 files as of 2026-06-25; see DB.md)
+  migrations/                   # SQL migrations (42 files as of 2026-09-23; see DB.md)
+  tests/                        # pgTAP suite (`supabase test db`; §13)
+  demo/                         # demo generator + nightly reset job — demo project only, NOT migrations (§14)
+  seed.sql                      # local/CI seed: demo staff + demo.reset()
+  bench/checkin_latency.sql     # create_checkin timing on the seeded DB (local only)
 scripts/
   seed-admins.mjs               # one-time admin seed (implemented)
   push-supabase-auth-config.mjs # optional: push Auth redirect URLs via Management API (needs SUPABASE_ACCESS_TOKEN)
   set-admin-password.mjs        # service-role password rotation (implemented)
-  verify_payment_checkin_link.sql # post-migration verification for payment.checkin_id (implemented)
   backup-usb.mjs                # companion USB backup script (Phase 3; schedule via Task Scheduler)
+  demo-staff.mjs                # demo accounts on the hosted demo (§14)
+  capture-media.mjs             # README screenshots + GIF (Playwright + ffmpeg)
+  repo-metrics.mjs              # README numbers (repo + local DB + benchmark)
+.github/workflows/ci.yml        # CI (§13)
 ```
 
 ### 2.2 Training categories (`training_category`)
@@ -327,7 +337,7 @@ Implemented at `(app)/pazar` with helpers in `lib/pazar/` and shared UI in `comp
 - **Sign-out ≠ end shift:** plain logout only clears auth (shift stays open); on counter, logout prompts **Završi smenu i odjavi se** vs **Odjavi se ipak** when `has_open_shift()` is true (`hasOpenShiftAction()`).
 - **Open / resume:** `open_or_resume_shift()` (**SECURITY DEFINER** since v1.7 hardening; was INVOKER) — insert if none; `resumed` if same worker; `foreign_shift_open` if another worker (no side effects). Handles `unique_violation` from `shift_one_open_uidx` internally. DEFINER means non-admin workers need **no SELECT on `shift`** (the `shift_select_open` RLS policy was dropped — `DB.md` §12.1).
 - **Handover:** `handoverShiftAction()` / `switchWorkerAction()` call **`handover_shift()`** (**DEFINER**, `FOR UPDATE`) — atomic close (`switch`) + open. Switch worker still requires password sign-in first.
-- **End shift (manual):** **"Završi smenu" ends the shift AND signs out** via `endShiftAndSignOutAction()` (single server action: `end_shift()` → `auth.signOut()` → `redirect("/login")`, no `revalidatePath`, so no layout re-render can auto-reopen the shift). `endShiftAction()` (INVOKER `end_shift()`, `ended_reason = 'logout'`) remains for any caller that ends without signing out.
+- **End shift (manual):** **"Završi smenu" ends the shift AND signs out** via `endShiftAndSignOutAction()` (single server action: `end_shift()` → `auth.signOut()` → `redirect("/login")`, no `revalidatePath`, so no layout re-render can auto-reopen the shift). `endShiftAction()` (`end_shift()`, `ended_reason = 'logout'`) remains for any caller that ends without signing out. `end_shift()` is **SECURITY DEFINER** since migration `20260923120000`. As INVOKER it silently updated 0 rows for workers, who have no SELECT on `shift`, so the shift stayed open until auto-close.
 - **Admin reconcile:** badge in sidebar/header; `/dashboard?unassigned=1` and `/pazar?unassigned=1` with assign/waive actions (`lib/shifts/reconcile-actions.ts`).
 - **Counter guard:** `isCounterDevice()` — remote admin sessions skip shift RPCs and banner.
 - **Safety net:** `pg_cron` `auto_close_shifts()` — see `DB.md` §8.
@@ -383,18 +393,22 @@ Companion Node script **`scripts/backup-usb.mjs`** on the counter computer, sche
 - **Cron**: shift auto-close and membership promotion via Supabase `pg_cron` (`auto_close_shifts`, `promote_memberships`); optional Vercel Cron for app-level tasks.
 - Migrations applied through the Supabase CLI; types regenerated after each migration.
 
-### Production coordinates (first deploy 2026-06-18)
+### Hosted environment (first deploy 2026-06-18; public demo since 2026-09-23)
+
+> This project passed the go-live checks on 2026-06-25 but was **never put into use at the gym**. Since 2026-09-23 it is the permanent **public demo** (§14, `demo.md`), with generated data and `DEMO_MODE=true`. The gym gets a **new** Supabase + Vercel project following `go-live.md`. The table below describes the demo project.
 
 | | Value |
 |---|---|
 | Vercel project | `gym-management-system` (team "Niksa's projects") |
 | Production URL | `https://<your-app>.vercel.app` |
 | Function region | **`fra1`** (Frankfurt) via `vercel.json` `regions`, colocated with Supabase |
-| Supabase project ref | `<project-ref>` (`eu-central-1`) — the only active project = **production** |
+| Supabase project ref | `<project-ref>` (`eu-central-1`), the demo project |
 | Git integration | Vercel auto-deploys `main` on push/merge |
 | Migration tooling | `supabase` CLI pinned as a devDependency |
 
-### Deploy runbook (manual — no CI yet)
+### Deploy runbook
+
+CI (§13) runs on every PR and on `main`. Deployment is still manual beyond Vercel's git integration:
 
 1. Apply pending SQL migrations: **`supabase db push`** (preserves the migration filename timestamp as the ledger version, keeping repo ↔ remote 1:1). ⚠️ Using MCP `apply_migration` instead records an **MCP-generated** timestamp, which drifts the ledger from the repo filenames — if you must use it, plan a periodic `migration repair` reconcile (see incidents below).
 2. Regenerate types: `supabase gen types typescript --local > lib/db/types.ts` (or remote equivalent).
@@ -456,6 +470,8 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 | `SHIFT_ATTRIBUTION_LAUNCH_AT` | `lib/shifts/config.ts` | ISO timestamp cutoff for pending-attribution badge (defaults to migration launch if unset) |
 | `GYM_USB_BACKUP_PATH` | `scripts/backup-usb.mjs` | Default USB mount path for scheduled backups (optional CLI arg) |
 | `DATABASE_URL` | `scripts/backup-usb.mjs` | Postgres connection string for `pg_dump` (optional; JSON export fallback) |
+| `DEMO_MODE` | `lib/demo.ts` | **Demo only** (§14). `true` shows the demo buttons + banner and blocks account changes / reset email. Server-only; `/login` is prerendered, so it is read at build time and needs a redeploy. Never set on a gym deployment |
+| `DEMO_ADMIN_PASSWORD` / `DEMO_WORKER_PASSWORD` | `app/(auth)/login/demo-actions.ts`, `scripts/demo-staff.mjs` | **Demo only.** Passwords for `dragan` / `jelena`. The demo sign-in re-applies them to the account every time (min 12 chars; Vercel Sensitive) |
 
 > The existing helpers read `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Keep those names. Never expose the service-role key or `COUNTER_DEVICE_SECRET` to the browser. A template is provided in `.env.example`; the 2 initial Admins are provisioned with `scripts/seed-admins.mjs`.
 >
@@ -475,7 +491,41 @@ Four issues surfaced on the first real deploy. All are fixed; documented here so
 ---
 
 ## 12. Phased delivery (maps to SoW)
-- **Phase 0 — Setup** (done; **deployed to production 2026-06-18, alignment smoke verified**): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
+- **Phase 0 — Setup** (done; **deployed to the hosted environment 2026-06-18, alignment smoke verified**; that environment is now the public demo, §9): schema + RLS, **auth implemented** (username/password login, route guards, password reset via SSR callback + Resend, admin accounts + last-active-admin guard, counter-device binding, `(shell)/` access gate + `/samo-salter`, logout open-shift prompt, shift lifecycle RPCs + `pg_cron` auto-close + login-attempt cleanup, 2 Admins seeded), **app shell + collapsible sidebar implemented** (shadcn `sidebar`, role-gated nav including „Kontrolna tabla“ for `/dashboard`, worker/shift controls in the footer). Live deploy + migration-ledger reconcile recorded in §9; alignment deploy in v1.10 / §9.2.
 - **Phase 1 — Core (MVP)** (done): **members CRUD + card + search** (`(app)/clanovi`). **Membership prices** (`(app)/cene`). **Dashboard check-in v1** + Phase 1c trainer-without-package + payment ↔ check-in Etapa 2 (`(app)/dashboard`, §2.3). **Pazar** — cash payment, custom price, discount list, daily/monthly/yearly takings, debt settlement, void/revert, group Fitpass +300 + surcharge void on arrival cancel, membership `payment.checkin_id` auto-link (`/pazar`, §2.4). **Smene** — Admin weekly shift history (`/smene`, §5).
 - **Phase 2 — Advanced**: non-trainer Open 8/1 & 12/1 session auto-deduct; session override after expiry (§3.4); end-of-day unreturned-keys report (§3.7). *(All Phase 2 dashboard items above — **done** v1.23.)*
 - **Phase 3 — Reliability** *(partial — online-only)*: USB backup script (`scripts/backup-usb.mjs`). Offline/PWA **removed** (v1.25); offline DB idempotency **`p_id` reverted** (v1.26).
+
+---
+
+## 13. Testing & CI
+
+| Layer | Where | What it covers |
+|---|---|---|
+| Unit (Vitest) | `lib/**/*.test.ts` (`npm test`) | Pure TS modules only (no `server-only`, no Supabase): Belgrade business day incl. DST (`lib/time`), membership status (`lib/members/status.ts`), offered price / discount rules (`lib/pazar`), username ↔ email mapping, shift formatting and closing times, catalog sort, dashboard closing, paging past PostgREST `max_rows` (`fetchAllRows`), Zod schemas |
+| Database (pgTAP) | `supabase/tests/*.test.sql` (`npm run test:db`) | `00000_helpers` creates fixtures and `tests.as_worker()` / `tests.as_admin()`, which set JWT claims + `authenticated` role. The files cover: check-in (open-visit guard GYM05, session deduction, reserved debt, first visit), payments (record/void, debt settlement, queued renewal), pause/resume, RLS and guard triggers per role (same-day edits, restore admin-only, archive-with-debt, `anon` has no access), shifts (open/handover/end), and invariants of the generated demo data. Each file runs in `begin … rollback` |
+| Benchmark | `supabase/bench/checkin_latency.sql` | 200 `create_checkin` calls as the worker on the seeded DB, reporting p50/p95. Local only, not in CI |
+
+**CI** (`.github/workflows/ci.yml`, on every PR and push to `main`):
+
+- `web`: `npm ci` → lint → typecheck → Vitest with coverage → `next build`. The build uses dummy env and needs no database.
+- `db`: `supabase db start` applies **every migration on an empty database**, then the seed (demo generator + `seed.sql`), then `supabase test db`.
+- `secrets`: gitleaks over the full history.
+
+`scripts/repo-metrics.mjs` prints the counts quoted in the README (migrations, tests, functions, policies, demo volume; `--bench` adds the benchmark).
+
+---
+
+## 14. Demo mode
+
+The hosted project (§9) is a public demo. Full setup, reset and teardown: **`demo.md`**.
+
+- **Flag:** `DEMO_MODE=true` (`lib/demo.ts`, server-only).
+- **Sign-in:** `app/(auth)/login/demo-actions.ts` restores the demo account (active, role, env password) and signs in with `signInWithPassword`, like the normal login.
+  - The worker (`jelena`) gets `setCounterDevice()`.
+  - The admin (`dragan`) gets `unsetCounterDevice()`.
+  - It then redirects straight to `/dashboard`. `redirect("/")` chains a second redirect: in a production build, the action response then carried `Location` and the client got HTML instead of RSC. `isCounterDevice()` and every other guard are unchanged; the flag only decides who gets the cookie.
+- **Guards:** `app/api/admin/accounts/route.ts` returns 403 "Onemogućeno u demo režimu." The forgot-password action returns without sending mail. Operational data and prices stay editable, because the nightly reset restores them.
+- **Banner:** `components/demo-banner.tsx`, rendered by `app/(app)/(shell)/layout.tsx`. It gives three things to try per role, plus a glossary. Dismissal is kept in `localStorage`.
+- **Data:** `supabase/demo/demo_generator.sql` (`demo.reset()` / `demo.generate()`) and `demo_cron.sql` (`demo-nightly-reset`, 00:30 UTC). Neither is a migration, so a real project never gets them. Locally and in CI, `config.toml` `[db.seed]` loads the generator and `seed.sql`.
+

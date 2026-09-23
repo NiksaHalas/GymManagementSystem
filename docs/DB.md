@@ -1,7 +1,7 @@
 # DB — Database Schema
 
-Version: 1.26
-Date: 2026-06-25
+Version: 1.27
+Date: 2026-09-23
 Engine: **PostgreSQL (Supabase)**
 Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 
@@ -31,6 +31,7 @@ Companion docs: `PRD.md` (product), `Tech.md` (architecture).
 > v1.24 — **Offline sync idempotency (`p_id`)** (2026-06-25). Migration `20260625120000_offline_idempotency_p_id`: **drop + recreate** `create_checkin` with trailing `p_id uuid default null`; **drop + recreate** `record_payment` with trailing `p_id uuid default null`. When `p_id` is supplied and a row with that id already exists, the RPC returns the id **without re-running side effects** (no second session deduction, surcharge, membership, or debt settle). Repo: **40** migration files. See `Tech.md` v1.24 / PRD v1.21.
 > v1.25 — **Phase 3 rollback — online-only app** (2026-06-25). **No schema change.** Migration `20260625120000` **retained** on remote; `p_id` remains an optional RPC parameter (client sends `null`). §6 shortened: UUID PKs + `business_date` unchanged; offline enqueue/drain narrative removed. See `Tech.md` v1.25 / PRD v1.22.
 > v1.26 — **Phase 3 DB rollback — revert offline `p_id`** (2026-06-25). Migration `20260625160000_revert_offline_p_id`: **drop + recreate** `create_checkin` / `record_payment` without `p_id` (restores pre-v1.24 signatures/bodies from `20260623140000` / `20260619140000`). **No table or data changes.** App no longer sends `p_id`. Repo: **41** migration files. See `Tech.md` v1.26 / PRD v1.23.
+> v1.27 — **`end_shift` fix, empty-DB migrations, demo schema** (2026-09-23). Migration `20260923120000_end_shift_security_definer` makes `end_shift()` **SECURITY DEFINER** with `search_path = public` (§12.3). As INVOKER its UPDATE matched 0 rows for workers, because workers have no SELECT on `shift`. Migration `20260618120200` now revokes `rls_auto_enable()` only if the function exists, so every migration applies on an empty database (CI, local `db reset`). New **`demo` schema** (§13): generator + nightly reset job `demo-nightly-reset`, **demo project only, not a migration**. The pgTAP suite in `supabase/tests/` replaces `scripts/verify_*.sql` (`Tech.md` §13). Repo: **42** migrations.
 
 This document defines the database schema for the Gym Management System. It follows the Supabase Postgres best-practices skill: lowercase `snake_case` identifiers, an index on every foreign key, partial/composite indexes for hot paths, and **RLS enabled and forced** on every table.
 
@@ -645,7 +646,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 - **Same-day rule for Users** on `payment`/`checkin` UPDATE: `business_date = business_today()` (Europe/Belgrade); Admins may edit any day.
 - **Two intentional exceptions** (flagged WARN by Supabase's linter, accepted): `session_log_insert` and `reserved_session_update` use `with check (true)` because the schema has no actor column to bind to — `session_log` has no `created_by`, and a `reserved_session` is settled by whichever worker takes the next payment (not the creator). These rely on app-level checks. To close them at the DB level we would add `recorded_by` to `session_log` and `settled_by` to `reserved_session`.
 - **Privileges:** `authenticated` and `service_role` are granted `select, insert, update, delete` on all tables (RLS is the real filter); `anon` is granted none. Helper functions have `execute` revoked from `anon`; trigger functions (`assign_member_no`, `handle_new_user`) additionally have it revoked from `authenticated` (triggers fire regardless of `execute` grants).
-- **Auto-enable safety net:** a pre-existing project-level event trigger (`ensure_rls` → `rls_auto_enable()`) auto-enables RLS on any new `public` table; migrations additionally `force` it.
+- **Auto-enable safety net:** a pre-existing project-level event trigger (`ensure_rls` → `rls_auto_enable()`) auto-enables RLS on any new `public` table; migrations additionally `force` it. The hosted project creates `rls_auto_enable()`, the migrations do not. Migration `20260618120200` therefore revokes its `execute` only when the function exists, so an empty database (CI, local) still migrates.
 
 ---
 
@@ -671,7 +672,7 @@ All policies target the `authenticated` role (`anon` has no table grants):
 
 ## 8. Scheduled jobs (`pg_cron`)
 
-The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). Three jobs are registered.
+The `pg_cron` extension is enabled (`create extension if not exists pg_cron schema cron;`). Three jobs are registered by migrations. The public demo project has a fourth one, `demo-nightly-reset` (§13), which is not a migration.
 
 ### 8.1 Shift auto-close safety net
 `auto_close_shifts()` closes any still-open shift after the gym's **closing time + 20-minute grace**, stamping `ended_at` to the **actual closing time** (not "now") and `ended_reason = 'auto_close'`. It does **not** touch auth sessions, so a logged-in worker stays signed in.
@@ -857,7 +858,7 @@ Counter-device binding (`gym_counter` cookie) is enforced in the app layer (`lib
 **SECURITY DEFINER.** Atomically: `SELECT … FOR UPDATE` on open shift → close other worker (`ended_reason = 'switch'`) → INSERT new shift for `auth.uid()`. Same worker already open → no-op.
 
 ### 12.3 `end_shift() → void`
-**SECURITY INVOKER.** Closes authenticated worker's open shift (`ended_reason = 'logout'`). Does **not** sign out of Supabase Auth.
+**SECURITY DEFINER** (`search_path = public`), since migration `20260923120000`. It was INVOKER before. Migration `20260618120100` dropped workers' SELECT on `shift`, and an UPDATE with a WHERE clause must also pass a SELECT policy, so for workers the update silently matched 0 rows. The shift then stayed open until `auto_close_shifts()`. The body closes only the caller's own open shift (`staff_id = auth.uid()`, `ended_reason = 'logout'`), so running as owner does not widen access. `EXECUTE` goes to `authenticated` only. Does **not** sign out of Supabase Auth.
 
 ### 12.3a `has_open_shift() → boolean`
 **SECURITY DEFINER** (migration `20260618140000`). Read-only check whether `auth.uid()` has an open shift. Used by the logout prompt on counter devices. `EXECUTE` granted to `authenticated` only.
@@ -868,3 +869,30 @@ Counter-device binding (`gym_counter` cookie) is enforced in the app layer (`lib
 **Indexes:** `shift_one_open_uidx` (max one open shift globally); `checkin_pending_attribution_idx` / `payment_pending_attribution_idx` on `(created_at) WHERE shift_id IS NULL AND waived_at IS NULL`.
 
 **Launch cutoff:** env `SHIFT_ATTRIBUTION_LAUNCH_AT` (default `2026-06-17T10:07:00+00`) — badge excludes historical NULL rows.
+
+---
+
+## 13. Demo schema (public demo project only)
+
+`supabase/demo/demo_generator.sql` and `supabase/demo/demo_cron.sql` are **not migrations**. The migration ledger stays identical for a real gym project, which never gets them. They are loaded:
+
+- locally and in CI by `config.toml` `[db.seed]`, before `supabase/seed.sql`;
+- on the hosted demo by hand (`demo.md`).
+
+- **Schema `demo`**: all privileges are revoked from `public`, `anon` and `authenticated`, and it is not in the API's exposed schemas.
+  - `demo.meta (k, v jsonb)`: `last_reset` holds the counts from the latest reset.
+  - `demo.catalog_category`, `demo.catalog_type`, `demo.catalog_price`: a snapshot of the price list, taken the first time the file is applied.
+- **`demo.reset(p_today date default business_today()) → jsonb`** (SECURITY DEFINER):
+  1. Deletes operational rows in FK order: `reserved_session`, `session_log`, `payment`, `checkin`, `membership`, `member`, `shift`, `login_attempt`. Then restarts `member_no_seq`.
+  2. Restores the catalog snapshot (`overriding system value` keeps ids stable) and re-activates keys.
+  3. Resets the six demo staff to their roles.
+  4. Calls `demo.generate(p_today − 394, p_today)`.
+- **`demo.generate(p_from, p_to) → jsonb`**: a deterministic (`setseed`) day-by-day simulation that writes rows directly, following the same rules the RPCs enforce:
+  - sessions match counted visits;
+  - at most one active or paused membership per member;
+  - every check-in and payment carries the `staff_id` / `shift_id` of the shift covering it;
+  - archived members have no open debt.
+
+  `created_at` / `updated_at` are set to event time. Archiving is a final UPDATE that touches only members with no open debt and no live membership, so `member_archive_no_debt_guard` passes. `supabase/tests/07_demo_seed.test.sql` checks these invariants and determinism.
+- **Job `demo-nightly-reset`**: `30 0 * * *` UTC, `select demo.reset()`. That is after `auto_close_shifts` and before `promote_memberships`, which runs at 01:05 UTC over the fresh data.
+

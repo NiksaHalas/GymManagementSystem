@@ -1,6 +1,14 @@
 # Puštanje u rad (Go-Live) — master checklist
 
 Operativni vodič za prvo realno puštanje sistema na šalteru. Prati korake redom.
+
+> **Teretana dobija nov, čist projekat.** Postojeći Supabase + Vercel projekat je trajno
+> javni demo ([demo.md](demo.md)) i **ne koristi se** za teretanu. Za teretanu:
+> - nov Supabase projekat: samo `supabase db push` (sve migracije); **ne** primenjuj ništa iz
+>   `supabase/demo/` i **ne** pokreći `scripts/demo-staff.mjs`;
+> - nov Vercel projekat (ili nov production env) **bez** `DEMO_MODE` i bez `DEMO_*` lozinki;
+> - Admin nalozi preko `scripts/seed-admins.mjs`;
+> - zatim redom koraci ispod.
 Pre check-in/plaćanja **mora** biti odrađen Korak 2.5 (registracija šaltera), inače
 `requireCounterToday()` blokira rad.
 
@@ -14,9 +22,9 @@ Povezani dokumenti:
 ## Korak 1 — Verifikacija
 
 ### 1.1 Migracije baze
-- Očekivano: **41/41 migracija, bez drifta**, poslednja `20260625160000 revert_offline_p_id`.
+- Očekivano: **42/42 migracije, bez drifta**, poslednja `20260923120000 end_shift_security_definer`.
 - Provera: `npx supabase migration list --linked`.
-- Status: ✅ već potvrđeno.
+- Status: proveriti na novom projektu (na demo projektu je potvrđeno 2026-09-23).
 
 ### 1.2 Env varijable na Vercel-u (ručna provera korisnika)
 Otvori Vercel → Project → Settings → Environment Variables (Production). Proveri:
