@@ -6,6 +6,8 @@ import { fetchPendingAttributionCount } from "@/lib/shifts/queries";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppHeader } from "@/components/app-header";
 import { ShiftAttributionBanner } from "@/components/shift-attribution-banner";
+import { DemoBanner } from "@/components/demo-banner";
+import { isDemoMode } from "@/lib/demo";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -42,6 +44,7 @@ export default async function ShellLayout({
         <SidebarInset>
           <AppHeader pendingAttributionCount={pendingAttributionCount} />
           <main className="flex-1 p-4 md:p-6">
+            {isDemoMode() && <DemoBanner isCounter={counter} />}
             {counter && shiftOpenResult && (
               <ShiftAttributionBanner initialState={shiftOpenResult} />
             )}

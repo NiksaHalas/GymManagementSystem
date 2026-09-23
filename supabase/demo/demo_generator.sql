@@ -25,6 +25,20 @@ create table if not exists demo.meta (
 );
 revoke all on demo.meta from public, anon, authenticated;
 
+-- Snapshot of the price list taken the first time this file is applied. Demo
+-- visitors may edit prices and packages; demo.reset() restores this snapshot.
+create table if not exists demo.catalog_category as
+  select id, code, label, is_trainer_based, per_trainee, active, sort_order
+  from public.training_category;
+create table if not exists demo.catalog_type as
+  select id, training_category_id, package, label, is_time_based, sessions, duration_days, active
+  from public.membership_type;
+create table if not exists demo.catalog_price as
+  select membership_type_id, amount_rsd, is_discount_price, active
+  from public.price;
+revoke all on demo.catalog_category, demo.catalog_type, demo.catalog_price
+  from public, anon, authenticated;
+
 -- -----------------------------------------------------------------------------
 -- Small helpers
 -- -----------------------------------------------------------------------------
@@ -38,6 +52,18 @@ $$;
 -- Random element of an array.
 create or replace function demo.pick(arr text[])
 returns text language sql volatile as $$
+  select arr[1 + floor(random() * array_length(arr, 1))::int];
+$$;
+
+-- Random element of an id array. Callers pass arrays in a stable order (by id),
+-- so the pick never depends on physical row order and a reset is reproducible.
+create or replace function demo.pick_id(arr bigint[])
+returns bigint language sql volatile as $$
+  select arr[1 + floor(random() * array_length(arr, 1))::int];
+$$;
+
+create or replace function demo.pick_uuid(arr uuid[])
+returns uuid language sql volatile as $$
   select arr[1 + floor(random() * array_length(arr, 1))::int];
 $$;
 
@@ -111,14 +137,19 @@ create or replace function demo.first_names_f() returns text[] language sql immu
   select array['Jelena','Milica','Ana','Marija','Jovana','Ivana','Tijana','Katarina','Sanja',
                'Dragana','Nevena','Teodora','Sara','Anđela','Kristina','Jasmina','Gordana',
                'Maja','Aleksandra','Nataša','Snežana','Mina','Dunja','Tamara','Vesna',
-               'Ljiljana','Isidora','Milena','Biljana','Danijela'];
+               'Ljiljana','Isidora','Milena','Biljana','Danijela','Nina','Lena','Hana',
+               'Andrea','Valentina','Emilija','Anja','Marina','Bojana','Jovanka','Olivera',
+               'Zorica','Svetlana','Mirjana','Sofija','Tanja','Vanja','Iva',
+               'Nađa','Kaća'];
 $$;
 
 create or replace function demo.first_names_m() returns text[] language sql immutable as $$
   select array['Marko','Nikola','Stefan','Lazar','Luka','Milan','Nemanja','Aleksandar',
                'Dušan','Filip','Uroš','Vuk','Đorđe','Miloš','Jovan','Petar','Bojan','Dragan',
                'Vladimir','Ivan','Nenad','Zoran','Srđan','Dejan','Goran','Mihajlo','Ognjen',
-               'Andrija','Vukašin','Relja'];
+               'Andrija','Vukašin','Relja','Strahinja','Pavle','Viktor','Mateja','Teodor',
+               'Veljko','Igor','Darko','Predrag','Saša','Branko','Slobodan','Aleksa',
+               'Dimitrije','Danilo','Vasilije','Kosta','Radoš','Mladen','Nebojša'];
 $$;
 
 create or replace function demo.last_names() returns text[] language sql immutable as $$
@@ -127,7 +158,21 @@ create or replace function demo.last_names() returns text[] language sql immutab
                'Živković','Lukić','Savić','Mitrović','Obradović','Stefanović','Janković',
                'Tomić','Simić','Radovanović','Kovačević','Lazić','Filipović','Vasić',
                'Milenković','Petković','Ćirić','Babić','Vuković','Nešić','Zdravković',
-               'Gajić','Marinković','Stojković','Bogdanović','Radosavljević'];
+               'Gajić','Marinković','Stojković','Bogdanović','Radosavljević','Mladenović',
+               'Stevanović','Aleksić','Milovanović','Vasiljević','Dimitrijević','Krstić',
+               'Ivanović','Mihajlović','Pešić','Antić','Đurić','Vučković','Milić','Jović',
+               'Veljković','Nedeljković','Ranković','Mitić','Maksimović','Blagojević',
+               'Arsić','Grujić','Perić','Trifunović','Cvetković','Stamenković','Dragić',
+               'Rakić','Ćosić','Jevtić','Milutinović','Lazarević','Gligorić','Matić',
+               'Pantić','Jakovljević','Knežević','Đokić','Luković','Tasić','Rajković',
+               'Jeremić','Spasić','Zorić','Urošević','Sretenović','Vidić','Bošković',
+               'Radić','Ristović','Ljubić','Jevremović','Dukić','Stojiljković',
+               'Pavić','Mirković','Jocić','Nenadović','Bojović','Grbić','Vukićević',
+               'Stošić','Mijatović','Ćurčić','Radulović','Dinić','Tošić','Šarić','Kecman',
+               'Vesić','Filić','Kovač','Stanić','Glišić','Despotović','Milojević','Gavrilović',
+               'Nikodijević','Andrić','Ćurković','Jelić','Vujić','Mandić','Radojević',
+               'Zlatković','Sekulić','Bogićević','Todić','Šekularac','Mićić','Anđelković',
+               'Paunović','Lalić','Protić','Bjelić','Rašić','Ostojić'];
 $$;
 
 -- -----------------------------------------------------------------------------
@@ -160,6 +205,7 @@ declare
   v_s2        uuid;
   v_s2_staff  uuid;
   v_handover  timestamptz;
+  v_auto_close boolean;
   v_keys      timestamptz[];
   v_free      int[];
   v_join_total numeric;
@@ -297,11 +343,14 @@ begin
     returning id into v_s1;
 
     if v_handover is not null and not v_is_today then
+      -- ~5% of evening workers forget to end the shift: pg_cron auto-closes it,
+      -- stamping the closing time itself (auto_close_shifts()).
+      v_auto_close := random() < 0.05;
       insert into shift (staff_id, started_at, ended_at, ended_reason, created_at)
       values (v_s2_staff, v_handover,
-              case when random() < 0.05 then demo.at(d, v_close)
+              case when v_auto_close then demo.at(d, v_close)
                    else demo.at(d, v_close + demo.rint(2, 15)) end,
-              case when random() < 0.05 then 'auto_close'::shift_end_reason
+              case when v_auto_close then 'auto_close'::shift_end_reason
                    else 'logout'::shift_end_reason end,
               v_handover)
       returning id into v_s2;
@@ -470,10 +519,11 @@ begin
       if random() < 0.005 then
         insert into checkin (member_id, staff_id, shift_id, key_no, business_date, voided,
                              voided_at, voided_by, created_by, created_at, updated_by, updated_at)
-        select id, v_staff, v_shift, null, d, true, v_t - interval '1 min', v_staff,
-               v_staff, v_t - interval '2 min', v_staff, v_t - interval '1 min'
-        from member where id <> s.member_id and not archived
-        order by random() limit 1;
+        select demo.pick_uuid(array(select id from member
+                                    where id <> s.member_id and not archived
+                                    order by member_no)),
+               v_staff, v_shift, null, d, true, v_t - interval '1 min', v_staff,
+               v_staff, v_t - interval '2 min', v_staff, v_t - interval '1 min';
       end if;
 
       insert into checkin (member_id, staff_id, shift_id, key_no, business_date,
@@ -525,10 +575,10 @@ begin
           v_type := s.pref_type;
           if random() < 0.08 then
             -- occasionally tries a different package in the same category
-            select id into v_type from dm_type
-            where cat = (select cat from dm_type where id = s.pref_type) and package <> '1/1'
-            order by random() limit 1;
-            v_type := coalesce(v_type, s.pref_type);
+            v_type := coalesce(demo.pick_id(array(
+              select id from dm_type
+              where cat = (select cat from dm_type where id = s.pref_type) and package <> '1/1'
+              order by id)), s.pref_type);
           end if;
           select * into mt from dm_type where id = v_type;
           v_amount := case when s.discount and mt.cat = 'otvoreni' and mt.disc is not null
@@ -560,7 +610,9 @@ begin
             select s.member_id, v_staff, v_shift, o.id, 'membership', o.std, d, v_t,
                    true, v_staff, v_t + interval '2 min', 'Pogrešan paket',
                    v_staff, v_t, v_staff, v_t + interval '2 min'
-            from dm_type o where o.id <> mt.id and o.cat = mt.cat order by random() limit 1;
+            from dm_type o
+            where o.id = demo.pick_id(array(select id from dm_type
+                                            where id <> mt.id and cat = mt.cat order by id));
           end if;
 
           insert into payment (member_id, staff_id, shift_id, membership_type_id, membership_id,
@@ -861,6 +913,47 @@ begin
   delete from shift;
   delete from login_attempt;
   alter sequence member_no_seq restart with 1;
+
+  -- Restore the catalog snapshot (visitors may have edited prices or packages).
+  delete from membership_type where id not in (select id from demo.catalog_type);
+  delete from training_category where id not in (select id from demo.catalog_category);
+
+  insert into training_category (id, code, label, is_trainer_based, per_trainee, active, sort_order)
+  overriding system value
+  select id, code, label, is_trainer_based, per_trainee, active, sort_order
+  from demo.catalog_category
+  on conflict (id) do update
+  set code = excluded.code, label = excluded.label,
+      is_trainer_based = excluded.is_trainer_based, per_trainee = excluded.per_trainee,
+      active = excluded.active, sort_order = excluded.sort_order;
+
+  insert into membership_type (id, training_category_id, package, label, is_time_based,
+                               sessions, duration_days, active)
+  overriding system value
+  select id, training_category_id, package, label, is_time_based, sessions, duration_days, active
+  from demo.catalog_type
+  on conflict (id) do update
+  set training_category_id = excluded.training_category_id, package = excluded.package,
+      label = excluded.label, is_time_based = excluded.is_time_based,
+      sessions = excluded.sessions, duration_days = excluded.duration_days,
+      active = excluded.active;
+
+  delete from price p
+  where not exists (select 1 from demo.catalog_price c
+                    where c.membership_type_id = p.membership_type_id
+                      and c.is_discount_price = p.is_discount_price);
+  insert into price (membership_type_id, amount_rsd, is_discount_price, active)
+  select membership_type_id, amount_rsd, is_discount_price, active from demo.catalog_price
+  on conflict (membership_type_id, is_discount_price) do update
+  set amount_rsd = excluded.amount_rsd, active = excluded.active;
+
+  update gym_key set active = true where not active;
+
+  -- Demo staff back to their roles (an Admin visitor may have changed them).
+  update staff set active = true,
+                   role = case when username = 'dragan' then 'admin'::staff_role
+                               else 'user'::staff_role end
+  where username in ('dragan', 'jelena', 'marko', 'ana', 'nikola', 'milica');
 
   v_stats := demo.generate(p_today - 394, p_today);
 

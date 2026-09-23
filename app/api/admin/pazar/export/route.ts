@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getAdminOrNull } from "@/lib/auth/session";
 import { getServerSupabase } from "@/lib/supabase/server-client";
 import { paymentKindLabel } from "@/lib/pazar/format";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 
 const querySchema = z.object({
   period: z.enum(["day", "month", "year"]),
@@ -55,33 +56,35 @@ export async function GET(req: NextRequest) {
     end = next.toISOString().slice(0, 10);
   }
 
-  let query = supabase
-    .from("payment")
-    .select(
-      `
-      business_date,
-      paid_at,
-      amount_rsd,
-      is_custom_price,
-      voided,
-      kind,
-      member ( member_no, first_name, last_name ),
-      membership_type ( label ),
-      staff!payment_staff_id_fkey ( username )
-    `,
-    )
-    .gte("business_date", start)
-    .order("paid_at", { ascending: true });
-
-  if (period === "day") {
-    query = query.lt("business_date", end);
-  } else {
-    query = query.lt("business_date", end);
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  let data;
+  try {
+    data = await fetchAllRows((from, to) =>
+      supabase
+        .from("payment")
+        .select(
+          `
+          business_date,
+          paid_at,
+          amount_rsd,
+          is_custom_price,
+          voided,
+          kind,
+          member ( member_no, first_name, last_name ),
+          membership_type ( label ),
+          staff!payment_staff_id_fkey ( username )
+        `,
+        )
+        .gte("business_date", start)
+        .lt("business_date", end)
+        .order("paid_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Greška pri izvozu." },
+      { status: 500 },
+    );
   }
 
   const header = [
@@ -95,7 +98,7 @@ export async function GET(req: NextRequest) {
     "Status",
   ].join(",");
 
-  const lines = (data ?? []).map((row) => {
+  const lines = data.map((row) => {
     const member = Array.isArray(row.member) ? row.member[0] : row.member;
     const mt = Array.isArray(row.membership_type)
       ? row.membership_type[0]

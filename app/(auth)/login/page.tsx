@@ -7,6 +7,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Shield } from "lucide-react";
+import { isDemoMode } from "@/lib/demo";
+import { DemoLoginButtons } from "./demo-login-buttons";
 import { LoginForm } from "./login-form";
 
 export const metadata = {
@@ -25,10 +27,11 @@ export default function LoginPage() {
           Unesite korisničko ime i lozinku da biste pristupili sistemu.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-6">
         <Suspense>
           <LoginForm />
         </Suspense>
+        {isDemoMode() && <DemoLoginButtons />}
       </CardContent>
     </Card>
   );
