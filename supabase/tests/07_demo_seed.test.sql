@@ -4,7 +4,7 @@
 -- same rules as data written through the app.
 
 begin;
-select plan(15);
+select plan(16);
 
 select has_function('demo', 'reset', array['date'], 'demo.reset(date) exists');
 select ok(
@@ -106,6 +106,32 @@ select ok(
   and (select count(*) > 0 from payment where voided)
   and (select count(*) > 0 from checkin where voided),
   'paused, queued, debt, Fitpass surcharge and voids are all represented');
+
+-- Visitors' edits to the price list and accounts are undone by the next reset ----------
+create temp table catalog_before as
+select (select jsonb_agg(to_jsonb(p) - 'id' - 'updated_by' - 'updated_at'
+                         order by membership_type_id, is_discount_price) from price p) as prices,
+       (select jsonb_agg(to_jsonb(t) - 'created_at' order by id) from membership_type t) as types;
+
+update price set amount_rsd = 1 where membership_type_id = tests.type_id('otvoreni', '30/1');
+update membership_type set active = false where id = tests.type_id('kardio', '30/1');
+delete from price where is_discount_price;
+insert into training_category (code, label) values ('joga', 'Joga');
+update staff set active = false where username = 'jelena';
+update staff set role = 'user' where username = 'dragan';
+
+select demo.reset((select d from today));
+
+select ok(
+  (select prices from catalog_before)
+    = (select jsonb_agg(to_jsonb(p) - 'id' - 'updated_by' - 'updated_at'
+                        order by membership_type_id, is_discount_price) from price p)
+  and (select types from catalog_before)
+    = (select jsonb_agg(to_jsonb(t) - 'created_at' order by id) from membership_type t)
+  and not exists (select 1 from training_category where code = 'joga')
+  and (select active from staff where username = 'jelena')
+  and (select role::text from staff where username = 'dragan') = 'admin',
+  'reset restores the price list, packages and demo accounts');
 
 select * from finish();
 rollback;
