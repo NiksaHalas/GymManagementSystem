@@ -89,8 +89,9 @@ export function formatBelgradeDateTime(instant: Date | string): string {
   return `${date} ${formatHm(d)}`;
 }
 
+/** Weekday name in Latin script (`sr-RS` alone resolves to Cyrillic in ICU). */
 export function formatWeekdayLong(dateIso: string): string {
-  return new Intl.DateTimeFormat("sr-RS", {
+  return new Intl.DateTimeFormat("sr-Latn-RS", {
     timeZone: "UTC",
     weekday: "long",
   }).format(new Date(`${dateIso}T12:00:00Z`));
