@@ -4,6 +4,7 @@ import { getServerSupabase } from "@/lib/supabase/server-client";
 import { getMemberStatus } from "@/lib/members/status";
 import { paymentKindLabel } from "@/lib/pazar/format";
 import { getShiftAttributionLaunchAt } from "@/lib/shifts/config";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import type {
   DayTotal,
   MonthTotal,
@@ -147,17 +148,19 @@ export async function fetchMonthTakings(
   const endYear = month === 12 ? year + 1 : year;
   const end = `${endYear}-${String(endMonth).padStart(2, "0")}-01`;
 
-  const { data, error } = await supabase
-    .from("payment")
-    .select("business_date, amount_rsd")
-    .eq("voided", false)
-    .gte("business_date", start)
-    .lt("business_date", end);
-
-  if (error) throw new Error(error.message);
+  const data = await fetchAllRows((from, to) =>
+    supabase
+      .from("payment")
+      .select("business_date, amount_rsd")
+      .eq("voided", false)
+      .gte("business_date", start)
+      .lt("business_date", end)
+      .order("id")
+      .range(from, to),
+  );
 
   const byDay = new Map<string, { total: number; count: number }>();
-  for (const row of data ?? []) {
+  for (const row of data) {
     const d = row.business_date as string;
     const entry = byDay.get(d) ?? { total: 0, count: 0 };
     entry.total += row.amount_rsd as number;
@@ -184,17 +187,19 @@ export async function fetchYearTakings(
   const start = `${year}-01-01`;
   const end = `${year + 1}-01-01`;
 
-  const { data, error } = await supabase
-    .from("payment")
-    .select("business_date, amount_rsd")
-    .eq("voided", false)
-    .gte("business_date", start)
-    .lt("business_date", end);
-
-  if (error) throw new Error(error.message);
+  const data = await fetchAllRows((from, to) =>
+    supabase
+      .from("payment")
+      .select("business_date, amount_rsd")
+      .eq("voided", false)
+      .gte("business_date", start)
+      .lt("business_date", end)
+      .order("id")
+      .range(from, to),
+  );
 
   const byMonth = new Map<number, { total: number; count: number }>();
-  for (const row of data ?? []) {
+  for (const row of data) {
     const d = row.business_date as string;
     const m = parseInt(d.slice(5, 7), 10);
     const entry = byMonth.get(m) ?? { total: 0, count: 0 };
