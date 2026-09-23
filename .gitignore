@@ -60,3 +60,6 @@ gym-backup/
 
 # local secret-scan output
 gitleaks-report.json
+
+# capture-media.mjs scratch video
+docs/media/.video/
