@@ -57,3 +57,6 @@ gym-backup/
 
 # agent local settings
 .claude/settings.local.json
+
+# local secret-scan output
+gitleaks-report.json
